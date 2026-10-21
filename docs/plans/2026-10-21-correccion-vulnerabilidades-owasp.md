@@ -169,11 +169,11 @@ Cada tarea debe poder hacerse en 5-10 minutos y tener un resultado verificable. 
 - [ ] **T6** – Tests de `order.service` para IDOR: cliente ajeno, staff de otro restaurante, propietario y admin · `packages/api/src/services/order.service.test.ts` · ⏱ 10 min
 - [ ] **T7** – `OrderController`: pasar `req.user` al servicio, usar `restaurantId` del JWT para no admin en `getActiveOrders` · `packages/api/src/controllers/order.controller.ts` · ⏱ 8 min
 - [ ] **T8** – Añadir `authorize` por ruta en pedidos (`active` y `PATCH` solo staff y admin) · `packages/api/src/routes/order.routes.ts` · ⏱ 5 min
-- [ ] **T9** – Aplicar `assertRestaurantAccess()` en las rutas de platos · `packages/api/src/routes/dish.routes.ts` · ⏱ 5 min
-- [ ] **T10** – Hacer que `getById`, `update` y `delete` de platos filtren por `id` y `restaurant_id` (repositorio, servicio y controlador) · `packages/api/src/repositories/dish.repository.ts`, `services/dish.service.ts`, `controllers/dish.controller.ts` · ⏱ 10 min
-- [ ] **T11** – Tests de `dish.service` (plato de otro restaurante devuelve no encontrado en get, update y delete) · `packages/api/src/services/dish.service.test.ts` (nuevo) · ⏱ 10 min
-- [ ] **T12** – Aplicar `assertRestaurantAccess()` en ingredientes y en empleados anidados, y comprobar en ingredientes que el id pertenece al restaurante de la ruta · `routes/ingredient.routes.ts`, `contexts/employee/infrastructure/http/restaurant-employee.routes.ts` · ⏱ 8 min
-- [ ] **T13** – Restringir `GET /restaurants` a admin y `GET /restaurants/:id` con `assertRestaurantAccess('id')` · `packages/api/src/routes/restaurant.routes.ts` · ⏱ 5 min
+- [x] **T9** – Aplicar `assertRestaurantAccess()` en las rutas de platos · `packages/api/src/routes/dish.routes.ts` · ⏱ 5 min
+- [x] **T10** – Hacer que `getById`, `update` y `delete` de platos filtren por `id` y `restaurant_id` (repositorio, servicio y controlador) · `packages/api/src/repositories/dish.repository.ts`, `services/dish.service.ts`, `controllers/dish.controller.ts` · ⏱ 10 min
+- [x] **T11** – Tests de `dish.service` (plato de otro restaurante devuelve no encontrado en get, update y delete) · `packages/api/src/services/dish.service.test.ts` (nuevo) · ⏱ 10 min
+- [x] **T12** – Aplicar `assertRestaurantAccess()` en ingredientes y en empleados anidados, y comprobar en ingredientes que el id pertenece al restaurante de la ruta · `routes/ingredient.routes.ts`, `contexts/employee/infrastructure/http/restaurant-employee.routes.ts` · ⏱ 8 min
+- [x] **T13** – Restringir `GET /restaurants` a admin y `GET /restaurants/:id` con `assertRestaurantAccess('id')` · `packages/api/src/routes/restaurant.routes.ts` · ⏱ 5 min
 - [ ] **T14** – `CreateEmployeeUseCase`: validar coherencia rol/`restaurantId` (existencia incluida) y test · `contexts/employee/application/CreateEmployeeUseCase.ts` y su test · ⏱ 10 min
 
 **B. Secreto JWT y seed (SEC-08, SEC-07)**
