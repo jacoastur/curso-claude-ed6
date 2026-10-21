@@ -3,8 +3,14 @@ import jwt from 'jsonwebtoken'
 
 const JWT_SECRET: string = process.env.JWT_SECRET || 'super-secret-resttek-key'
 
+export interface AuthUser {
+    id: string
+    role: string
+    restaurantId: string | null
+}
+
 export interface AuthRequest extends Request {
-    user?: any
+    user?: AuthUser
 }
 
 export const authenticate = (req: AuthRequest, res: Response, next: NextFunction): void => {
@@ -23,7 +29,7 @@ export const authenticate = (req: AuthRequest, res: Response, next: NextFunction
 
     try {
         const decoded = jwt.verify(token, JWT_SECRET)
-        req.user = decoded
+        req.user = decoded as unknown as AuthUser
         next()
     } catch {
         res.status(401).json({ error: 'Unauthorized: Invalid token' })
@@ -33,6 +39,30 @@ export const authenticate = (req: AuthRequest, res: Response, next: NextFunction
 export const authorize = (roles: string[]) => {
     return (req: AuthRequest, res: Response, next: NextFunction): void => {
         if (!req.user || !roles.includes(req.user.role)) {
+            res.status(403).json({ error: 'Forbidden: Insufficient permissions' })
+            return
+        }
+        next()
+    }
+}
+
+/**
+ * Aislamiento por restaurante: el admin pasa siempre; el resto solo si el
+ * parámetro de la ruta coincide con el restaurante de su token.
+ */
+export const assertRestaurantAccess = (paramName = 'restaurantId') => {
+    return (req: AuthRequest, res: Response, next: NextFunction): void => {
+        const user = req.user
+        if (!user) {
+            res.status(403).json({ error: 'Forbidden: Insufficient permissions' })
+            return
+        }
+        if (user.role === 'admin') {
+            next()
+            return
+        }
+        const target = req.params[paramName]
+        if (!user.restaurantId || target !== user.restaurantId) {
             res.status(403).json({ error: 'Forbidden: Insufficient permissions' })
             return
         }
