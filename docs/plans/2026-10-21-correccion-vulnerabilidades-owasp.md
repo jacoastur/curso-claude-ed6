@@ -161,9 +161,9 @@ Cada tarea debe poder hacerse en 5-10 minutos y tener un resultado verificable. 
 
 **A. Control de acceso (SEC-01 a SEC-04, SEC-10)**
 
-- [ ] **T1** – Definir el tipo `AuthUser` y tipar `AuthRequest.user` en lugar de `any` · `packages/api/src/contexts/shared/infrastructure/http/middlewares.ts` · ⏱ 5 min
-- [ ] **T2** – Añadir el middleware `assertRestaurantAccess(paramName)` (admin pasa; resto exige coincidencia con `user.restaurantId`, si no 403) · `middlewares.ts` · ⏱ 8 min
-- [ ] **T3** – Tests unitarios de `authorize` y `assertRestaurantAccess` (admin, mismo restaurante, otro restaurante, sin restaurante) · `packages/api/src/contexts/shared/infrastructure/http/middlewares.test.ts` (nuevo) · ⏱ 10 min
+- [x] **T1** – Definir el tipo `AuthUser` y tipar `AuthRequest.user` en lugar de `any` · `packages/api/src/contexts/shared/infrastructure/http/middlewares.ts` · ⏱ 5 min
+- [x] **T2** – Añadir el middleware `assertRestaurantAccess(paramName)` (admin pasa; resto exige coincidencia con `user.restaurantId`, si no 403) · `middlewares.ts` · ⏱ 8 min
+- [x] **T3** – Tests unitarios de `authorize` y `assertRestaurantAccess` (admin, mismo restaurante, otro restaurante, sin restaurante) · `packages/api/src/contexts/shared/infrastructure/http/middlewares.test.ts` (nuevo) · ⏱ 10 min
 - [ ] **T4** – `OrderService.getById(id, user)`: devolver el pedido solo al cliente propietario, al staff del mismo restaurante o al admin; si no, `OrderNotFoundError` · `packages/api/src/services/order.service.ts` · ⏱ 10 min
 - [ ] **T5** – `OrderService.updateItemStatus` y `listActive` reciben el usuario; comprobar que el pedido es de su restaurante (admin exento) · `order.service.ts` · ⏱ 10 min
 - [ ] **T6** – Tests de `order.service` para IDOR: cliente ajeno, staff de otro restaurante, propietario y admin · `packages/api/src/services/order.service.test.ts` · ⏱ 10 min
