@@ -164,11 +164,11 @@ Cada tarea debe poder hacerse en 5-10 minutos y tener un resultado verificable. 
 - [x] **T1** – Definir el tipo `AuthUser` y tipar `AuthRequest.user` en lugar de `any` · `packages/api/src/contexts/shared/infrastructure/http/middlewares.ts` · ⏱ 5 min
 - [x] **T2** – Añadir el middleware `assertRestaurantAccess(paramName)` (admin pasa; resto exige coincidencia con `user.restaurantId`, si no 403) · `middlewares.ts` · ⏱ 8 min
 - [x] **T3** – Tests unitarios de `authorize` y `assertRestaurantAccess` (admin, mismo restaurante, otro restaurante, sin restaurante) · `packages/api/src/contexts/shared/infrastructure/http/middlewares.test.ts` (nuevo) · ⏱ 10 min
-- [ ] **T4** – `OrderService.getById(id, user)`: devolver el pedido solo al cliente propietario, al staff del mismo restaurante o al admin; si no, `OrderNotFoundError` · `packages/api/src/services/order.service.ts` · ⏱ 10 min
-- [ ] **T5** – `OrderService.updateItemStatus` y `listActive` reciben el usuario; comprobar que el pedido es de su restaurante (admin exento) · `order.service.ts` · ⏱ 10 min
-- [ ] **T6** – Tests de `order.service` para IDOR: cliente ajeno, staff de otro restaurante, propietario y admin · `packages/api/src/services/order.service.test.ts` · ⏱ 10 min
-- [ ] **T7** – `OrderController`: pasar `req.user` al servicio, usar `restaurantId` del JWT para no admin en `getActiveOrders` · `packages/api/src/controllers/order.controller.ts` · ⏱ 8 min
-- [ ] **T8** – Añadir `authorize` por ruta en pedidos (`active` y `PATCH` solo staff y admin) · `packages/api/src/routes/order.routes.ts` · ⏱ 5 min
+- [x] **T4** – `OrderService.getById(id, user)`: devolver el pedido solo al cliente propietario, al staff del mismo restaurante o al admin; si no, `OrderNotFoundError` · `packages/api/src/services/order.service.ts` · ⏱ 10 min
+- [x] **T5** – `OrderService.updateItemStatus` y `listActive` reciben el usuario; comprobar que el pedido es de su restaurante (admin exento) · `order.service.ts` · ⏱ 10 min
+- [x] **T6** – Tests de `order.service` para IDOR: cliente ajeno, staff de otro restaurante, propietario y admin · `packages/api/src/services/order.service.test.ts` · ⏱ 10 min
+- [x] **T7** – `OrderController`: pasar `req.user` al servicio, usar `restaurantId` del JWT para no admin en `getActiveOrders` · `packages/api/src/controllers/order.controller.ts` · ⏱ 8 min
+- [x] **T8** – Añadir `authorize` por ruta en pedidos (`active` y `PATCH` solo staff y admin) · `packages/api/src/routes/order.routes.ts` · ⏱ 5 min
 - [x] **T9** – Aplicar `assertRestaurantAccess()` en las rutas de platos · `packages/api/src/routes/dish.routes.ts` · ⏱ 5 min
 - [x] **T10** – Hacer que `getById`, `update` y `delete` de platos filtren por `id` y `restaurant_id` (repositorio, servicio y controlador) · `packages/api/src/repositories/dish.repository.ts`, `services/dish.service.ts`, `controllers/dish.controller.ts` · ⏱ 10 min
 - [x] **T11** – Tests de `dish.service` (plato de otro restaurante devuelve no encontrado en get, update y delete) · `packages/api/src/services/dish.service.test.ts` (nuevo) · ⏱ 10 min
