@@ -197,7 +197,7 @@ Cada tarea debe poder hacerse en 5-10 minutos y tener un resultado verificable. 
 
 - [ ] **T26** – `npm audit fix` sin `--force` en la raíz; ejecutar `npm test` y anotar lo que queda pendiente · `package-lock.json` · ⏱ 8 min
 - [ ] **T27** – Evaluar `sqlite3@6` (cambio mayor) en una rama: arrancar, `npm run seed` y `npm test`; adoptar solo si todo pasa · `packages/api/package.json` · ⏱ 10 min
-- [ ] **T28** – Actualizar `@angular/*` a >=21.2.25 en los frontends y comprobar `npm run build` de los tres · `packages/*/package.json` · ⏱ 10 min
+- [x] **T28** – Actualizar `@angular/*` a >=21.2.25 en los frontends y comprobar `npm run build` de los tres · `packages/*/package.json` · ⏱ 10 min
 - [ ] **T29** – Añadir `helmet`, `app.disable('x-powered-by')` y CORS con lista blanca desde `CORS_ORIGINS` · `packages/api/src/app.ts` · ⏱ 8 min
 - [ ] **T30** – Registrar en el log los 500, los 401 y 403 y los login fallidos (`console.error` estructurado) · `errorHandler.ts`, `middlewares.ts`, `LoginUseCase.ts` · ⏱ 10 min
 
