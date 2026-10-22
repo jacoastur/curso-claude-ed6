@@ -100,6 +100,5 @@ export class CartStore {
   clear(): void {
     this._items.set([])
     this._restaurantId.set(null)
-    this._table.set(null)
   }
 }
