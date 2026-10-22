@@ -12,6 +12,8 @@ const tableController = new TableController(tableService)
 const router = Router({ mergeParams: true })
 
 router.get('/available', tableController.getAvailable)
+router.get('/mine', authenticate, authorize(['cliente']), tableController.getMine)
 router.post('/:id/occupy', authenticate, authorize(['cliente']), tableController.occupy)
+router.post('/:id/release', authenticate, authorize(['cliente']), tableController.release)
 
 export default router

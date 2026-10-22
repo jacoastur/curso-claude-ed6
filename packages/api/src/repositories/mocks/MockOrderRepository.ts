@@ -3,6 +3,12 @@ import type { Order } from '@models/order.model.js'
 
 export class MockOrderRepository implements OrderRepository {
     orders: Order[] = []
+    /** Platos que existen, por id → restaurantId. */
+    private dishes: Map<string, string> = new Map()
+
+    addDish(restaurantId: string, dishId: string): void {
+        this.dishes.set(dishId, restaurantId)
+    }
 
     async create(order: Order): Promise<void> {
         this.orders.push(order)
@@ -24,5 +30,9 @@ export class MockOrderRepository implements OrderRepository {
 
     async findByClientId(clientId: string): Promise<Order[]> {
         return this.orders.filter(o => o.clientId === clientId)
+    }
+
+    async findDishIdsInRestaurant(restaurantId: string, dishIds: string[]): Promise<string[]> {
+        return dishIds.filter(id => this.dishes.get(id) === restaurantId)
     }
 }

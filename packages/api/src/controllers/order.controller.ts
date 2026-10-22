@@ -1,18 +1,13 @@
-import type { Request, Response } from 'express'
+import type { Request, Response, NextFunction } from 'express'
 import type { OrderService } from '@services/order.service.js'
-import { AppError } from '@errors/AppError.js'
-
-const CREATE_ORDER_ERROR_STATUS: Record<string, number> = {
-    TableNotFoundError: 404,
-    TableNotAvailableError: 409
-}
 
 export class OrderController {
     constructor(private readonly orderService: OrderService) {}
 
-    async createOrder(req: Request, res: Response): Promise<void> {
+    // Los errores van al errorHandler común, como en el resto de controladores.
+    async createOrder(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
-            const { restaurantId, tableId, items } = req.body
+            const { restaurantId, tableId, items } = req.body ?? {}
             const user = (req as any).user
             const clientId = user?.id ?? null
             const order = await this.orderService.create({
@@ -23,14 +18,7 @@ export class OrderController {
             })
             res.status(201).json(order)
         } catch (error) {
-            // Errores de dominio con el mismo formato que errorHandler.
-            if (error instanceof AppError) {
-                res.status(CREATE_ORDER_ERROR_STATUS[error.name] ?? 400).json({ error: error.name, message: error.message })
-            } else if (error instanceof Error) {
-                res.status(400).json({ error: error.message })
-            } else {
-                res.status(500).json({ error: 'Internal Server Error' })
-            }
+            next(error)
         }
     }
 

@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express'
 import type { TableService } from '@services/table.service.js'
 import type { RestaurantTable } from '@models/table.model.js'
+import type { AuthRequest } from '@shared/infrastructure/http/middlewares.js'
 
 export class TableController {
     constructor(private readonly tableService: TableService) {}
@@ -81,13 +82,36 @@ export class TableController {
         }
     }
 
-    occupy = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    occupy = async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
         try {
-            const table = await this.tableService.occupy(req.params.restaurantId as string, req.params.id as string, req.body?.people)
+            const table = await this.tableService.occupy(req.params.restaurantId as string, req.params.id as string, req.body?.people, this.clientIdOf(req))
             res.status(200).json(this.toJSON(table))
         } catch (error) {
             next(error)
         }
+    }
+
+    getMine = async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+        try {
+            const mine = await this.tableService.findMine(req.params.restaurantId as string, this.clientIdOf(req))
+            res.status(200).json({ table: this.toJSON(mine.table), hasOrders: mine.hasOrders })
+        } catch (error) {
+            next(error)
+        }
+    }
+
+    release = async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
+        try {
+            const table = await this.tableService.release(req.params.restaurantId as string, req.params.id as string, this.clientIdOf(req))
+            res.status(200).json(this.toJSON(table))
+        } catch (error) {
+            next(error)
+        }
+    }
+
+    // Las rutas públicas de cliente pasan por authenticate, así que req.user existe.
+    private clientIdOf(req: AuthRequest): string {
+        return req.user?.id as string
     }
 
     private toJSON(table: RestaurantTable) {
