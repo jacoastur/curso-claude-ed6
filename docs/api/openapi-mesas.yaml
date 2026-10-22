@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Resttek API - Gestión de mesas (issue #5)
-  version: 1.0.0
+  version: 1.3.0
   description: |
     Contrato de la funcionalidad de **gestión de mesas** y de los endpoints de pedidos
     afectados. Es la fuente de verdad compartida por la API y los tres frontends
@@ -12,8 +12,8 @@ info:
     - Todas las rutas cuelgan de `/api/v1`. Los frontends llaman a `/api/...` y el proxy
       de desarrollo lo redirige a `http://localhost:3000`.
     - JSON en `camelCase`. Fechas como cadenas ISO 8601 en UTC (`2026-10-22T10:15:00.000Z`).
-    - Identificadores: cadenas (UUID v4 para las mesas creadas por la API; el seed puede usar
-      ids legibles). El cliente no debe asumir ningún formato.
+    - Identificadores: cadenas (UUID v4 para las mesas creadas por la API; el seed usa ids
+      legibles como `rest-1-mesa-3`). El cliente no debe asumir ningún formato.
     - Autenticación: JWT en `Authorization: Bearer <token>` obtenido con
       `POST /api/v1/auth/login`. El token lleva `id`, `role` y `restaurantId`.
     - Roles: `admin`, `manager`, `camarero`, `cocinero`, `cliente`. Los roles permitidos
@@ -21,17 +21,43 @@ info:
     - Aislamiento por restaurante (`assertRestaurantAccess`): en las rutas privadas de
       mesas el `admin` accede a cualquier restaurante; `manager` y `camarero` solo al
       `restaurantId` de su token (si no, 403).
-    - Errores: ver el schema `Error`. Las rutas de mesas pasan por el `errorHandler`
-      común y responden `{ error: <NombreDelError>, message }`. Los middlewares de
-      autenticación responden solo `{ error: <mensaje> }`. En `POST /orders` los errores
-      de dominio responden `{ error: <NombreDelError>, message }` (ver la operación). El
-      frontend debe decidir por el **código HTTP** (y, si lo necesita, por el nombre en
-      `error`), nunca por el texto de `message`. Los textos de `message` están en inglés,
-      como el resto de errores de dominio de la API; la tabla completa está en el schema
-      `Error`.
-    - Estados de mesa (`TableStatus`): `libre`, `ocupada`, `reservada`. Una mesa la ocupa
-      el cliente al elegirla (o un empleado/admin manualmente) y **solo la libera un
-      empleado** (`PATCH .../status` con `libre`); no hay liberación automática.
+    - Errores: ver el schema `Error`. Las rutas de mesas y `POST /orders` pasan por el
+      `errorHandler` común y responden `{ error: <NombreDelError>, message }`; un error
+      inesperado responde 500 `{ error: 'InternalServerError', message }`. Los middlewares
+      de autenticación y el resto de handlers de pedidos responden solo
+      `{ error: <mensaje> }`. El frontend debe decidir por el **código HTTP** (y, si lo
+      necesita, por el nombre en `error`), nunca por el texto de `message`. Los textos de
+      `message` están en inglés, como el resto de errores de dominio de la API; la tabla
+      completa está en el schema `Error`.
+
+    ### Ciclo de vida de una mesa
+
+    - Estados (`TableStatus`): `libre`, `ocupada`, `reservada`.
+    - **Ocupación por un cliente**: `POST .../occupy` pasa la mesa a `ocupada` y guarda
+      internamente quién la ocupó (`occupied_by`, no se expone en `RestaurantTable`).
+      **Solo ese cliente puede crear pedidos en la mesa** (`POST /orders` → 403
+      `TableNotOwnedError` para cualquier otro usuario, también empleados). Un cliente
+      solo puede ocupar **una mesa por restaurante** (409 `ClientAlreadyHasTableError`).
+    - **Ocupación manual**: si un empleado o el admin la pone en `ocupada` (PATCH o PUT)
+      desde otro estado, queda **sin dueño**: nadie puede pedir en ella hasta que salga de
+      `ocupada` y la ocupe un cliente.
+    - **Salida de `ocupada`** (hacia `libre` o `reservada`, por PATCH, PUT o release):
+      - si la mesa tiene **pedidos activos** → 409 `TableHasActiveOrdersError` y no cambia
+        nada. Hay que entregar todos los ítems antes;
+      - si no, en una única transacción: se cambia el estado, se limpia `occupied_by` y
+        los pedidos de la mesa se **mueven** a las tablas de histórico (`orders_history`,
+        `order_items_history`, con `archived_at`).
+
+      Así cada ocupación empieza limpia y "pedidos de la ocupación actual" = pedidos de la
+      mesa que siguen en `orders`. Los archivados dejan de aparecer en
+      `GET /orders/active`, pero siguen en `GET /orders/mine` y `GET /orders/{id}` con
+      `archived: true`. Las transiciones entre `libre` y `reservada` no archivan nada (la
+      mesa no tiene pedidos).
+    - **Liberación**: la hace un empleado (`PATCH .../status` o `PUT`) o el propio cliente
+      si todavía no ha pedido nada (`POST .../release`; su 409 `TableHasOrdersError` tiene
+      prioridad). No hay liberación automática.
+    - **Pedido activo**: el que tiene al menos un ítem en estado distinto de `entregado`
+      (misma definición que `GET /orders/active`).
 
 servers:
   - url: http://localhost:3000/api/v1
@@ -41,7 +67,7 @@ tags:
   - name: Mesas
     description: Gestión privada de mesas de un restaurante (admin y empleados de sala).
   - name: Mesas públicas
-    description: Consulta y ocupación de mesas por parte del cliente (web-clientes).
+    description: Consulta, ocupación, recuperación y liberación de mesas por parte del cliente (web-clientes).
   - name: Pedidos
     description: Endpoints de pedidos afectados por la asociación con mesas.
 
@@ -97,8 +123,15 @@ paths:
       operationId: createTable
       summary: Crear una mesa
       description: |
-        Crea una mesa en el restaurante. `status` es opcional (por defecto `libre`).
-        `description` vacía o solo con espacios se guarda como `null`.
+        Crea una mesa en el restaurante. `status` es opcional (por defecto `libre`); si se
+        crea `ocupada`, queda sin dueño. `description` vacía o solo con espacios se guarda
+        como `null`.
+
+        **Concurrencia:** las altas y ediciones de mesas de un mismo restaurante se
+        serializan en el servicio (lock por restaurante) y, además, si la restricción
+        `UNIQUE(restaurant_id, number)` de SQLite salta, se traduce a
+        `DuplicatedTableNumberError`. Si dos peticiones simultáneas usan el mismo número,
+        una recibe 201 y la otra **409, nunca 500**.
 
         **Roles:** `admin`.
       x-roles: [admin]
@@ -193,7 +226,18 @@ paths:
         **obligatorios**; `description` es opcional: ausente, `null`, vacía o solo con
         espacios → se guarda `null` (es decir, omitirla **borra** la descripción). El
         cambio de número comprueba la unicidad dentro del restaurante (la propia mesa no
-        cuenta como duplicada).
+        cuenta como duplicada) con la misma serialización que el alta (409, nunca 500).
+
+        **Efectos secundarios del cambio de `status`** (los mismos que en `PATCH .../status`):
+
+        - **Sale de `ocupada`** (a `libre` o `reservada`) con **pedidos activos** (algún ítem
+          no `entregado`) → 409 `TableHasActiveOrdersError` y no se cambia nada (ni el resto
+          de campos).
+        - Sale de `ocupada` sin pedidos activos → en la misma transacción se limpia el dueño
+          (`occupied_by`) y sus pedidos (todos completados) se **archivan**.
+        - Pasa a `ocupada` desde otro estado → queda sin dueño. Si ya estaba `ocupada`, el
+          dueño y los pedidos se conservan.
+        - Entre `libre` y `reservada` no hay efectos.
 
         **Roles:** `admin`.
       x-roles: [admin]
@@ -236,15 +280,37 @@ paths:
         '404':
           $ref: '#/components/responses/TableNotFound'
         '409':
-          $ref: '#/components/responses/DuplicatedTableNumber'
+          description: |
+            Número repetido (`DuplicatedTableNumberError`) o salida de `ocupada` con pedidos
+            activos (`TableHasActiveOrdersError`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                numeroRepetido:
+                  value:
+                    error: DuplicatedTableNumberError
+                    message: 'Table number is already in use in this restaurant'
+                pedidosActivos:
+                  value:
+                    error: TableHasActiveOrdersError
+                    message: 'Table has active orders'
     delete:
       tags: [Mesas]
       operationId: deleteTable
       summary: Borrar una mesa
       description: |
-        Borra la mesa. No se puede borrar una mesa `ocupada` (409); las `libre` y
-        `reservada` sí. Los pedidos antiguos de la mesa se conservan (su `tableNumber`
-        dejará de devolverse).
+        Borra la mesa. Se comprueba en este orden:
+
+        1. La mesa está `ocupada` → 409 `TableOccupiedError`.
+        2. La mesa tiene **pedidos activos** (algún ítem no `entregado`; misma definición
+           que `GET /orders/active`) → 409 `TableHasActiveOrdersError`. Con las reglas de
+           salida de `ocupada` no debería ocurrir; es una salvaguarda para datos antiguos.
+
+        Si se borra, los pedidos no activos que quedasen en la mesa se **archivan** en la
+        misma transacción. Los pedidos archivados conservan su `tableId`, pero dejan de
+        devolver `tableNumber`.
 
         **Roles:** `admin`.
       x-roles: [admin]
@@ -258,14 +324,20 @@ paths:
         '404':
           $ref: '#/components/responses/TableNotFound'
         '409':
-          description: La mesa está ocupada (`TableOccupiedError`).
+          description: La mesa está ocupada (`TableOccupiedError`) o tiene pedidos activos (`TableHasActiveOrdersError`).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
-              example:
-                error: TableOccupiedError
-                message: 'Cannot delete an occupied table'
+              examples:
+                ocupada:
+                  value:
+                    error: TableOccupiedError
+                    message: 'Cannot delete an occupied table'
+                pedidosActivos:
+                  value:
+                    error: TableHasActiveOrdersError
+                    message: 'Table has active orders'
 
   /restaurants/{restaurantId}/tables/{id}/status:
     parameters:
@@ -277,8 +349,21 @@ paths:
       summary: Cambiar el estado de una mesa
       description: |
         Cambia solo el estado. Se permite cualquier transición entre `libre`, `ocupada`
-        y `reservada` (incluido liberar una mesa ocupada → `libre`, o fijar el mismo
-        estado que ya tiene). Es la única forma de liberar una mesa.
+        y `reservada` (incluido fijar el mismo estado que ya tiene, que no tiene efectos).
+        Es la forma habitual de liberar una mesa.
+
+        **Efectos secundarios:**
+
+        - **Salida de `ocupada`** (a `libre` o `reservada`):
+          - si la mesa tiene **pedidos activos** (algún ítem no `entregado`; misma
+            definición que `GET /orders/active`) → 409 `TableHasActiveOrdersError` y la mesa
+            no cambia. Hay que entregar todos los ítems antes;
+          - si no, en la misma transacción se limpia el dueño (`occupied_by`) y sus pedidos
+            (todos completados) se **archivan** (siguen en `/orders/mine` y `/orders/{id}`
+            con `archived: true`).
+        - Paso a `ocupada` desde otro estado: la mesa queda sin dueño (nadie puede pedir en
+          ella).
+        - Entre `libre` y `reservada`: sin efectos.
 
         **Roles:** `admin`, `manager`, `camarero` (con aislamiento por restaurante).
       x-roles: [admin, manager, camarero]
@@ -323,6 +408,15 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/TableNotFound'
+        '409':
+          description: Salida de `ocupada` de una mesa con pedidos activos (`TableHasActiveOrdersError`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: TableHasActiveOrdersError
+                message: 'Table has active orders'
 
   /public/restaurants/{restaurantId}/tables/available:
     parameters:
@@ -377,6 +471,57 @@ paths:
                 error: InvalidPeopleCountError
                 message: 'People count must be an integer greater than or equal to 1'
 
+  /public/restaurants/{restaurantId}/tables/mine:
+    parameters:
+      - $ref: '#/components/parameters/RestaurantId'
+    get:
+      tags: [Mesas públicas]
+      operationId: getMyTable
+      summary: Mesa que ocupa el cliente en el restaurante
+      description: |
+        Permite al cliente **recuperar su mesa** (por ejemplo, al refrescar la página).
+        Devuelve la mesa del restaurante que está `ocupada` por el usuario del token y si
+        ya tiene pedidos en la ocupación actual (`hasOrders`: hay algún pedido de esa mesa
+        sin archivar, entregado o no).
+
+        Un cliente ocupa como mucho una mesa por restaurante, así que la respuesta es única.
+
+        Si el cliente no ocupa ninguna mesa en ese restaurante → 404 `TableNotFoundError`.
+
+        **Roles:** `cliente`. Sin token → 401; token de empleado/admin → 403.
+      x-roles: [cliente]
+      responses:
+        '200':
+          description: Mesa ocupada por el cliente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MyTableResponse'
+              example:
+                table:
+                  id: 9d3a7c5e-2f41-4b6a-8e0d-1c7b5a3f2e99
+                  restaurantId: rest-1
+                  number: 10
+                  description: Terraza
+                  capacity: 4
+                  status: ocupada
+                  createdAt: '2026-10-22T11:00:00.000Z'
+                  updatedAt: '2026-10-22T13:05:00.000Z'
+                hasOrders: false
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: El cliente no ocupa ninguna mesa en este restaurante (`TableNotFoundError`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: TableNotFoundError
+                message: Table not found
+
   /public/restaurants/{restaurantId}/tables/{id}/occupy:
     parameters:
       - $ref: '#/components/parameters/RestaurantId'
@@ -388,8 +533,18 @@ paths:
       description: |
         El cliente ocupa la mesa elegida al pulsar *Continuar*. La operación es atómica:
         solo tiene éxito si la mesa pertenece al restaurante, está `libre` y su
-        capacidad es >= `people`. Si dos clientes intentan ocupar la misma mesa, el
-        segundo recibe 409 (debe recargar la lista de disponibles).
+        capacidad es >= `people`; en ese caso se guarda al cliente como dueño
+        (`occupied_by`). Si dos clientes intentan ocupar la misma mesa, el segundo recibe
+        409 `TableNotAvailableError` (debe recargar la lista de disponibles).
+
+        Un cliente solo puede ocupar **una mesa por restaurante**: si ya ocupa otra en ese
+        restaurante → 409 `ClientAlreadyHasTableError` (debe recuperarla con
+        `GET .../tables/mine` o liberarla con `release`). Se comprueba en este orden:
+        `people` (400), mesa del restaurante (404), otra mesa ya ocupada por el cliente
+        (409 `ClientAlreadyHasTableError`), mesa libre y con capacidad (409
+        `TableNotAvailableError`). Las ocupaciones de un mismo restaurante se serializan
+        en el servicio para que dos peticiones simultáneas del mismo cliente no le dejen
+        con dos mesas.
 
         **Roles:** `cliente`. Sin token → 401; token de empleado/admin → 403.
       x-roles: [cliente]
@@ -430,41 +585,123 @@ paths:
         '404':
           $ref: '#/components/responses/TableNotFound'
         '409':
-          description: La mesa no está libre o su capacidad es insuficiente (`TableNotAvailableError`).
+          description: |
+            La mesa no está libre o su capacidad es insuficiente (`TableNotAvailableError`),
+            o el cliente ya ocupa otra mesa en el restaurante (`ClientAlreadyHasTableError`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                noDisponible:
+                  value:
+                    error: TableNotAvailableError
+                    message: 'Table is not available'
+                yaTieneMesa:
+                  value:
+                    error: ClientAlreadyHasTableError
+                    message: 'Client already occupies a table in this restaurant'
+
+  /public/restaurants/{restaurantId}/tables/{id}/release:
+    parameters:
+      - $ref: '#/components/parameters/RestaurantId'
+      - $ref: '#/components/parameters/TableId'
+    post:
+      tags: [Mesas públicas]
+      operationId: releaseTable
+      summary: Liberar una mesa (cliente, sin pedidos)
+      description: |
+        El cliente deja la mesa que ocupó (por ejemplo, si se arrepiente antes de pedir).
+        Se comprueba en este orden:
+
+        1. La mesa no existe o es de otro restaurante → 404 `TableNotFoundError`.
+        2. La mesa no está ocupada por el usuario del token (otro dueño, sin dueño, o ya
+           `libre`/`reservada`) → 403 `TableNotOwnedError`.
+        3. Ya hay pedidos en la ocupación actual (algún pedido de la mesa sin archivar) →
+           409 `TableHasOrdersError`. En ese caso solo puede liberarla un empleado, y solo
+           cuando todos esos pedidos estén completados. Este error tiene **prioridad** sobre
+           `TableHasActiveOrdersError`, así que `release` nunca devuelve este último.
+
+        Si tiene éxito, la mesa pasa a `libre` y se limpia el dueño (no hay pedidos que
+        archivar). Como tener pedidos activos implica tener pedidos, `release` nunca
+        devuelve `TableHasActiveOrdersError`. Sin cuerpo de petición.
+
+        **Roles:** `cliente`. Sin token → 401; token de empleado/admin → 403
+        (`Forbidden: Insufficient permissions`).
+      x-roles: [cliente]
+      responses:
+        '200':
+          description: Mesa liberada (`status = libre`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestaurantTable'
+              example:
+                id: 9d3a7c5e-2f41-4b6a-8e0d-1c7b5a3f2e99
+                restaurantId: rest-1
+                number: 10
+                description: Terraza
+                capacity: 4
+                status: libre
+                createdAt: '2026-10-22T11:00:00.000Z'
+                updatedAt: '2026-10-22T13:20:00.000Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            Rol distinto de `cliente` (middleware, `{ error: 'Forbidden: Insufficient permissions' }`)
+            o la mesa no la ocupa este cliente (`TableNotOwnedError`).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
               example:
-                error: TableNotAvailableError
-                message: 'Table is not available'
+                error: TableNotOwnedError
+                message: 'Table is not occupied by this client'
+        '404':
+          $ref: '#/components/responses/TableNotFound'
+        '409':
+          description: La mesa ya tiene pedidos en la ocupación actual (`TableHasOrdersError`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: TableHasOrdersError
+                message: 'Table already has orders'
 
   /orders:
     post:
       tags: [Pedidos]
       operationId: createOrder
-      summary: Crear un pedido (cambia - ahora exige mesa)
+      summary: Crear un pedido (exige la mesa ocupada por el cliente)
       description: |
-        Crea un pedido. **Cambio de contrato:** `tableId` pasa a ser obligatorio (no hay
-        pedidos para llevar) y se valida en este orden:
+        Crea un pedido en la mesa que ocupa el usuario del token. `tableId` es obligatorio
+        (no hay pedidos para llevar). Se valida en este orden y se devuelve el primer error:
 
-        1. Sin `tableId` (ausente, `null` o vacío) → 400 (`TableIdRequiredError`).
-        2. La mesa no existe o es de otro restaurante → 404 (`TableNotFoundError`).
-        3. La mesa no está `ocupada` → 409 (`TableNotAvailableError`).
+        1. Sin `restaurantId` → 400 `RestaurantIdRequiredError`.
+        2. `items` ausente, no es array o está vacío → 400 `OrderItemsRequiredError`.
+        3. Algún ítem sin `dishId` (cadena no vacía), con `quantity` que no es entero >= 1
+           o con `notes` que no es cadena ni `null` → 400 `InvalidOrderItemError`.
+        4. Sin `tableId` (ausente, `null` o vacío) → 400 `TableIdRequiredError`.
+        5. La mesa no existe o es de otro restaurante → 404 `TableNotFoundError`.
+        6. La mesa no está `ocupada` → 409 `TableNotAvailableError`.
+        7. La mesa no la ocupó el usuario del token (incluidas las mesas ocupadas a mano
+           por un empleado, que no tienen dueño) → 403 `TableNotOwnedError`. Aplica a
+           **cualquier rol**: un empleado tampoco puede pedir en la mesa de un cliente.
+        8. Algún `dishId` no existe o no es de ese restaurante → 400 `InvalidOrderDishError`.
 
-        Se admiten varios pedidos para la misma mesa mientras siga ocupada. Cada ítem
-        con `quantity: N` se expande en N ítems con `quantity: 1`. El `clientId` se toma
-        del token. La respuesta incluye `tableNumber` pero no los datos del plato
-        (`dishName`, ...) ni del restaurante.
+        Se admiten varios pedidos para la misma mesa mientras siga ocupada por el mismo
+        cliente. Cada ítem con `quantity: N` se expande en N ítems con `quantity: 1`. El
+        `clientId` se toma del token. El pedido y sus ítems se guardan en una transacción
+        (un fallo no deja pedidos a medias). La respuesta incluye `tableNumber` pero no los
+        datos del plato (`dishName`, ...) ni del restaurante.
 
-        **Códigos garantizados** (el frontend decide por código, no por texto):
-        400 = falta la mesa o el restaurante, 404 = mesa no encontrada, 409 = mesa no
-        ocupada. `OrderController` mantiene su `try/catch`, pero para los errores de
-        dominio (`AppError`) responde con el mismo formato que `errorHandler`:
-        `{ error: <NombreDelError>, message }`. Solo un error inesperado que no sea de
-        dominio responde 400 con `{ error: <mensaje> }`.
+        Todos los errores pasan por el `errorHandler`: `{ error: <NombreDelError>, message }`;
+        un error inesperado → 500 `InternalServerError`.
 
-        **Roles:** cualquier usuario autenticado (en la práctica `cliente`).
+        **Roles:** cualquier usuario autenticado; en la práctica solo puede tener éxito el
+        `cliente` que ocupa la mesa.
       x-roles: [admin, manager, camarero, cocinero, cliente]
       requestBody:
         required: true
@@ -514,8 +751,8 @@ paths:
                     status: pendiente
         '400':
           description: |
-            Falta `tableId` (`TableIdRequiredError`) o `restaurantId`
-            (`RestaurantIdRequiredError`). `restaurantId` se valida primero.
+            Datos del pedido inválidos: `RestaurantIdRequiredError`, `OrderItemsRequiredError`,
+            `InvalidOrderItemError`, `TableIdRequiredError` o `InvalidOrderDishError`.
           content:
             application/json:
               schema:
@@ -529,8 +766,29 @@ paths:
                   value:
                     error: RestaurantIdRequiredError
                     message: Restaurant ID is required
+                sinItems:
+                  value:
+                    error: OrderItemsRequiredError
+                    message: Order must contain at least one item
+                itemInvalido:
+                  value:
+                    error: InvalidOrderItemError
+                    message: 'Each item must have a dishId and an integer quantity greater than or equal to 1'
+                platoInexistente:
+                  value:
+                    error: InvalidOrderDishError
+                    message: Dish not found in this restaurant
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: La mesa no la ocupa el usuario del token (`TableNotOwnedError`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: TableNotOwnedError
+                message: 'Table is not occupied by this client'
         '404':
           description: La mesa no existe o no pertenece al restaurante del pedido.
           content:
@@ -549,16 +807,19 @@ paths:
               example:
                 error: TableNotAvailableError
                 message: Table is not available
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
   /orders/active:
     get:
       tags: [Pedidos]
       operationId: listActiveOrders
-      summary: Pedidos activos de un restaurante (cambia - añade tableNumber)
+      summary: Pedidos activos de un restaurante
       description: |
-        Pedidos con al menos un ítem no `entregado`, ordenados por `createdAt` ascendente.
-        Ahora cada pedido incluye `tableNumber` cuando `tableId` corresponde a una mesa
-        existente. Los ítems incluyen `dishName`, `dishPrice` y `dishCategory`.
+        Pedidos **no archivados** con al menos un ítem no `entregado`, ordenados por
+        `createdAt` ascendente. Cada pedido incluye `tableNumber` cuando `tableId`
+        corresponde a una mesa existente del restaurante. Los ítems incluyen `dishName`,
+        `dishPrice` y `dishCategory`. Nunca incluye `archived`.
 
         **Roles:** cualquier usuario autenticado (sin cambios).
       x-roles: [admin, manager, camarero, cocinero, cliente]
@@ -623,10 +884,12 @@ paths:
     get:
       tags: [Pedidos]
       operationId: listMyOrders
-      summary: Pedidos del usuario autenticado (cambia - añade tableNumber)
+      summary: Pedidos del usuario autenticado (incluye archivados)
       description: |
-        Pedidos cuyo `clientId` es el usuario del token, del más reciente al más antiguo.
-        Incluyen `restaurantName`, `restaurantLogoUrl` y ahora `tableNumber`.
+        Pedidos cuyo `clientId` es el usuario del token, **activos y archivados**, del más
+        reciente al más antiguo (`createdAt` descendente). Incluyen `restaurantName`,
+        `restaurantLogoUrl` y `tableNumber`. Los archivados llevan `archived: true`; en el
+        resto `archived` se omite (o es `false`).
 
         **Roles:** cualquier usuario autenticado (en la práctica `cliente`).
       x-roles: [admin, manager, camarero, cocinero, cliente]
@@ -639,6 +902,26 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Order'
+              example:
+                - id: a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d
+                  restaurantId: rest-1
+                  tableId: 9d3a7c5e-2f41-4b6a-8e0d-1c7b5a3f2e99
+                  tableNumber: 10
+                  clientId: client-1
+                  createdAt: '2026-10-22T13:10:00.000Z'
+                  restaurantName: Restaurante El Gourmet
+                  restaurantLogoUrl: null
+                  items: []
+                - id: c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f
+                  restaurantId: rest-1
+                  tableId: rest-1-mesa-3
+                  tableNumber: 3
+                  clientId: client-1
+                  createdAt: '2026-10-21T21:00:00.000Z'
+                  restaurantName: Restaurante El Gourmet
+                  restaurantLogoUrl: null
+                  archived: true
+                  items: []
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -652,10 +935,14 @@ paths:
     get:
       tags: [Pedidos]
       operationId: getOrder
-      summary: Detalle de un pedido (cambia - añade tableNumber)
+      summary: Detalle de un pedido (incluye archivados)
       description: |
-        Incluye `restaurantName`, `restaurantLogoUrl`, los datos del plato en cada ítem y
-        ahora `tableNumber`.
+        Busca el pedido entre los activos y, si no está, entre los archivados (que llevan
+        `archived: true`). Incluye `restaurantName`, `restaurantLogoUrl`, los datos del
+        plato en cada ítem y `tableNumber`.
+
+        Los ítems de un pedido archivado ya no se pueden cambiar de estado
+        (`PATCH /orders/{orderId}/items/{itemId}/status` responde como si no existiera).
 
         **Roles:** cualquier usuario autenticado (sin cambios).
       x-roles: [admin, manager, camarero, cocinero, cliente]
@@ -669,7 +956,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
-          description: Pedido no encontrado.
+          description: Pedido no encontrado ni en activos ni en archivados.
           content:
             application/json:
               schema:
@@ -731,7 +1018,9 @@ components:
             error: TableNotFoundError
             message: Table not found
     DuplicatedTableNumber:
-      description: Ya existe una mesa con ese número en el restaurante (`DuplicatedTableNumberError`).
+      description: |
+        Ya existe una mesa con ese número en el restaurante (`DuplicatedTableNumberError`),
+        también cuando dos peticiones concurrentes usan el mismo número.
       content:
         application/json:
           schema:
@@ -739,6 +1028,15 @@ components:
           example:
             error: DuplicatedTableNumberError
             message: 'Table number is already in use in this restaurant'
+    InternalServerError:
+      description: Error inesperado (no es un error de dominio).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: InternalServerError
+            message: Something went wrong
 
   schemas:
     TableStatus:
@@ -750,7 +1048,9 @@ components:
 
     RestaurantTable:
       type: object
-      description: Mesa de un restaurante (vista privada completa).
+      description: |
+        Mesa de un restaurante (vista completa). No expone quién la ocupa
+        (`occupied_by` es interno).
       required: [id, restaurantId, number, description, capacity, status, createdAt, updatedAt]
       properties:
         id:
@@ -792,6 +1092,19 @@ components:
         capacity:
           type: integer
           minimum: 1
+
+    MyTableResponse:
+      type: object
+      description: Mesa que ocupa el cliente y si ya ha pedido en la ocupación actual.
+      required: [table, hasOrders]
+      properties:
+        table:
+          $ref: '#/components/schemas/RestaurantTable'
+        hasOrders:
+          type: boolean
+          description: |
+            `true` si la mesa tiene algún pedido sin archivar (entregado o no). Si es
+            `true`, el cliente ya no puede liberarla con `release` (409).
 
     CreateTableRequest:
       type: object
@@ -853,15 +1166,18 @@ components:
         tableId:
           type: string
           minLength: 1
-          description: Id de una mesa del restaurante en estado `ocupada`. **Obligatorio.**
+          description: Id de una mesa del restaurante `ocupada` por el usuario del token. **Obligatorio.**
         items:
           type: array
+          minItems: 1
           items:
             type: object
             required: [dishId, quantity]
             properties:
               dishId:
                 type: string
+                minLength: 1
+                description: Plato existente del mismo restaurante.
               quantity:
                 type: integer
                 minimum: 1
@@ -908,14 +1224,20 @@ components:
         tableNumber:
           type: integer
           description: |
-            **Nuevo.** Número de la mesa (`restaurant_tables.number`). Se **omite** si
-            `tableId` no corresponde a ninguna mesa existente (pedidos antiguos o mesa
-            borrada). Mostrar con respaldo: `tableNumber ?? tableId`.
+            Número de la mesa (`restaurant_tables.number`). Se **omite** si `tableId` no
+            corresponde a ninguna mesa existente del restaurante (pedidos antiguos o mesa
+            borrada). Los frontends muestran "Sin mesa" en ese caso.
         clientId:
           type: [string, 'null']
         createdAt:
           type: string
           format: date-time
+        archived:
+          type: boolean
+          description: |
+            `true` si el pedido se archivó al liberar o borrar su mesa. Solo aparece en
+            `GET /orders/mine` y `GET /orders/{id}`; en los pedidos no archivados se omite
+            (equivale a `false`).
         items:
           type: array
           items:
@@ -931,23 +1253,33 @@ components:
       type: object
       required: [error]
       description: |
-        Cuerpo de error. Errores de dominio (rutas de mesas vía `errorHandler` y
-        `POST /orders`): `error` es el nombre del error y `message` el texto. Middlewares
-        de auth y el resto de handlers de `OrderController`: solo `error` con el mensaje.
+        Cuerpo de error. Errores que pasan por el `errorHandler` (rutas de mesas y
+        `POST /orders`): `error` es el nombre del error y `message` el texto; un error
+        inesperado es `{ error: 'InternalServerError', message: 'Something went wrong' }`
+        con 500. Middlewares de auth y el resto de handlers de `OrderController`: solo
+        `error` con el mensaje.
 
-        Errores de dominio de mesas (nombre → HTTP → `message` exacto):
+        Errores de dominio de mesas y pedidos (nombre → HTTP → `message` exacto):
 
         | `error` | HTTP | `message` |
         | --- | --- | --- |
+        | `RestaurantIdRequiredError` | 400 | `Restaurant ID is required` |
         | `TableIdRequiredError` | 400 | `Table ID is required` |
+        | `OrderItemsRequiredError` | 400 | `Order must contain at least one item` |
+        | `InvalidOrderItemError` | 400 | `Each item must have a dishId and an integer quantity greater than or equal to 1` |
+        | `InvalidOrderDishError` | 400 | `Dish not found in this restaurant` |
         | `InvalidTableNumberError` | 400 | `Table number must be an integer greater than or equal to 1` |
         | `InvalidTableCapacityError` | 400 | `Table capacity must be an integer greater than or equal to 1` |
         | `InvalidTableStatusError` | 400 | `Table status is required` (ausente) o `Invalid table status: <valor>. Must be one of: libre, ocupada, reservada` |
         | `InvalidPeopleCountError` | 400 | `People count must be an integer greater than or equal to 1` |
+        | `TableNotOwnedError` | 403 | `Table is not occupied by this client` |
         | `TableNotFoundError` | 404 | `Table not found` |
         | `DuplicatedTableNumberError` | 409 | `Table number is already in use in this restaurant` |
         | `TableNotAvailableError` | 409 | `Table is not available` |
         | `TableOccupiedError` | 409 | `Cannot delete an occupied table` |
+        | `TableHasActiveOrdersError` | 409 | `Table has active orders` (borrar una mesa o sacarla de `ocupada` con pedidos activos) |
+        | `ClientAlreadyHasTableError` | 409 | `Client already occupies a table in this restaurant` |
+        | `TableHasOrdersError` | 409 | `Table already has orders` |
       properties:
         error:
           type: string
