@@ -323,22 +323,28 @@ Privadas, bajo `/api/v1/restaurants/:restaurantId/tables`. Todas aplican `authen
 | `GET` | `/` | admin, manager, camarero | 200 `RestaurantTable[]` ordenadas por `number` |
 | `GET` | `/:id` | admin, manager, camarero | 200 / 404 si no existe o es de otro restaurante |
 | `POST` | `/` | admin | 201 / 400 / 409 (número repetido). `status` opcional, por defecto `libre` |
-| `PUT` | `/:id` | admin | 200 / 400 / 404 / 409. `number`, `capacity` y `status` obligatorios; `description` ausente o vacía → `null` |
-| `PATCH` | `/:id/status` | admin, manager, camarero | 200 / 400 / 404. Cualquier transición; es la única forma de liberar una mesa |
-| `DELETE` | `/:id` | admin | 204 / 404 / 409 si está `ocupada` |
+| `PUT` | `/:id` | admin | 200 / 400 / 404 / 409 (número repetido o salida de `ocupada` con pedidos activos). `number`, `capacity` y `status` obligatorios; `description` ausente o vacía → `null` |
+| `PATCH` | `/:id/status` | admin, manager, camarero | 200 / 400 / 404 / 409 (salida de `ocupada` con pedidos activos). Cualquier transición; fijar el mismo estado no tiene efectos |
+| `DELETE` | `/:id` | admin | 204 / 404 / 409 si está `ocupada` o tiene pedidos activos |
 
 Públicas, bajo `/api/v1/public/restaurants/:restaurantId/tables`:
 
 | Método | Ruta | Auth | Respuesta |
 | --- | --- | --- | --- |
 | `GET` | `/available?people=N` | ninguna | 200 `{ id, number, description, capacity }[]`: solo `libre` con `capacity >= N`, la más ajustada primero. 400 si `people` falta o no es entero ≥ 1 |
-| `POST` | `/:id/occupy` | `cliente` | 200 con la mesa ya `ocupada` / 400 / 401 / 403 / 404 / 409 si no está libre o no cabe |
+| `POST` | `/:id/occupy` | `cliente` | 200 con la mesa ya `ocupada` / 400 / 401 / 403 / 404 / 409 si no está libre, no cabe o el cliente ya ocupa otra mesa del restaurante (`ClientAlreadyHasTableError`) |
+| `GET` | `/mine` | `cliente` | 200 `{ table, hasOrders }` con la mesa que ocupa el cliente en ese restaurante / 404 si no ocupa ninguna |
+| `POST` | `/:id/release` | `cliente` | 200 con la mesa `libre` / 403 `TableNotOwnedError` si no es suya / 404 / 409 `TableHasOrdersError` si ya ha pedido |
 
 Reglas:
 
 - Número y capacidad son enteros JSON ≥ 1 (la cadena `"4"` se rechaza). El número es único dentro del restaurante (`UNIQUE(restaurant_id, number)`).
-- **Ocupar es atómico**: `occupyIfFree()` hace un único `UPDATE ... WHERE status = 'libre' AND capacity >= ?` y comprueba `changes === 1`, de modo que si dos clientes eligen la misma mesa el segundo recibe 409.
-- **No hay liberación automática**: la mesa queda `ocupada` hasta que un empleado la cambia a `libre` con `PATCH .../status`. Si el cliente no llega a pedir, la mesa sigue ocupada.
+- **Dueño de la mesa**: `occupy` guarda en `occupied_by` al cliente que la ocupa (no se devuelve en la API). Solo ese cliente puede pedir en ella. Un cliente ocupa como mucho **una mesa por restaurante**. Si un empleado pone una mesa en `ocupada` a mano, queda sin dueño y nadie puede pedir en ella.
+- **Ocupar es atómico**: `occupyIfFree()` es un único `UPDATE ... WHERE status = 'libre' AND capacity >= ? AND NOT EXISTS (otra mesa del cliente) RETURNING ...`. En el caso normal es una sola consulta; si no ocupa nada, el servicio lee la mesa solo para elegir el error (404, `ClientAlreadyHasTableError` o `TableNotAvailableError`).
+- **Salir de `ocupada`** (a `libre` o `reservada`, por `PATCH` o `PUT`): si la mesa tiene **pedidos activos** (algún ítem sin `entregado`, igual que `/orders/active`) responde 409 `TableHasActiveOrdersError` y no cambia nada; si no, en una transacción limpia el dueño y **mueve sus pedidos al histórico** (`orders_history`, `order_items_history`). Así cada ocupación empieza sin pedidos.
+- **Liberar**: la libera un empleado (cuando todo está entregado) o el propio cliente con `release` si todavía no ha pedido nada. No hay liberación automática.
+- **Borrar**: no se puede si está `ocupada` ni si tiene pedidos activos; los pedidos completados que le queden se archivan en la misma transacción.
+- **Concurrencia**: las operaciones que comprueban y luego escriben (número libre, sin pedidos activos, una mesa por cliente, mesa ocupada por quien pide) se ejecutan con un lock por restaurante (`services/restaurant-lock.ts`) compartido por `TableService` y `OrderService`. Además, si salta `UNIQUE(restaurant_id, number)`, el repositorio lo traduce a `DuplicatedTableNumberError`: dos altas simultáneas con el mismo número dan 201 y 409, nunca 500. El lock vive en memoria, así que solo es válido con un único proceso de la API.
 
 ### Pedidos
 
@@ -350,13 +356,20 @@ Reglas:
 | `GET` | `/api/v1/orders/:id` | autenticado |
 | `PATCH` | `/api/v1/orders/:orderId/items/:itemId/status` | autenticado — devuelve 204 sin cuerpo |
 
-**Todo pedido va asociado a una mesa** (no hay pedidos para llevar). `POST /orders` exige `tableId` y lo valida en este orden:
+**Todo pedido va asociado a una mesa ocupada por quien pide** (no hay pedidos para llevar). `POST /orders` valida en este orden y devuelve el primer error, siempre a través del `errorHandler`:
 
-1. Sin `tableId` (ausente, `null` o vacío) → 400 `TableIdRequiredError`.
-2. La mesa no existe o es de otro restaurante → 404 `TableNotFoundError`.
-3. La mesa no está `ocupada` → 409 `TableNotAvailableError`. Se admiten varios pedidos para la misma mesa mientras siga ocupada.
+1. Sin `restaurantId` → 400 `RestaurantIdRequiredError`.
+2. `items` ausente, no array o vacío → 400 `OrderItemsRequiredError`.
+3. Algún ítem sin `dishId`, con `quantity` que no es entero ≥ 1 o con `notes` que no es cadena ni `null` → 400 `InvalidOrderItemError`.
+4. Sin `tableId` (ausente, `null` o vacío) → 400 `TableIdRequiredError`.
+5. La mesa no existe o es de otro restaurante → 404 `TableNotFoundError`.
+6. La mesa no está `ocupada` → 409 `TableNotAvailableError`.
+7. La mesa no la ocupó el usuario del token (incluidas las ocupadas a mano, sin dueño) → 403 `TableNotOwnedError`, también para empleados.
+8. Algún plato no existe o es de otro restaurante → 400 `InvalidOrderDishError`.
 
-Por eso `OrderService` recibe dos repositorios: `new OrderService(orderRepository, tableRepository)`. Las lecturas de pedidos (`/active`, `/mine`, `/:id`) y la respuesta de `POST` incluyen `tableNumber`, obtenido con `LEFT JOIN restaurant_tables` sobre la misma `restaurant_id`. Si `tableId` no corresponde a ninguna mesa (pedidos antiguos con texto libre o mesa borrada), la clave `tableNumber` **se omite**; los frontends muestran `tableNumber ?? tableId`.
+Se admiten varios pedidos para la misma mesa mientras siga ocupada por el mismo cliente. El pedido y sus ítems se guardan en una transacción. `OrderService` recibe dos repositorios: `new OrderService(orderRepository, tableRepository)`. Las lecturas de pedidos (`/active`, `/mine`, `/:id`) y la respuesta de `POST` incluyen `tableNumber`, obtenido con `LEFT JOIN restaurant_tables` sobre la misma `restaurant_id`. Si `tableId` no corresponde a ninguna mesa (pedidos antiguos con texto libre o mesa borrada), la clave `tableNumber` **se omite** y los frontends muestran "Sin mesa".
+
+**Pedidos archivados**: `GET /orders/mine` y `GET /orders/:id` buscan también en `orders_history` y marcan esos pedidos con `archived: true` (en el resto la clave se omite). `GET /orders/active` solo lee `orders`, así que nunca los incluye. Los ítems de un pedido archivado no se pueden cambiar de estado (el `PATCH` responde como si no existiera).
 
 Ninguna ruta de pedidos aplica `authorize()`: cualquier usuario autenticado puede cambiar el estado de cualquier ítem.
 
@@ -386,28 +399,37 @@ Jerarquía: `Error` → `AppError` (abstracta) → errores específicos en `erro
 
 - **404**: `EmployeeNotFoundError`, `RestaurantNotFoundError`, `IngredientNotFoundError`, `DishNotFoundError`, `TableNotFoundError`
 - **401**: `InvalidCredentialsError`
-- **409** (`CONFLICT_ERRORS`): `DuplicatedTableNumberError`, `TableNotAvailableError`, `TableOccupiedError`
+- **403** (`FORBIDDEN_ERRORS`): `TableNotOwnedError`
+- **409** (`CONFLICT_ERRORS`): `DuplicatedTableNumberError`, `TableNotAvailableError`, `TableOccupiedError`, `TableHasActiveOrdersError`, `TableHasOrdersError`, `ClientAlreadyHasTableError`
 - **400**: cualquier otro `AppError`
 - **500**: errores no controlados
 
-Dos excepciones que conviene conocer:
+Excepciones que conviene conocer:
 
 - `OrderNotFoundError` **no** está en la lista de 404. Si llegase al `errorHandler` se traduciría a 400.
-- `OrderController` no delega en el `errorHandler`: es el único controlador que **no llama a `next(error)`**, sino que hace su propio `try/catch` y construye la respuesta a mano. Por eso `GET /orders/:id` sí devuelve 404, pero el `PATCH` de estado devuelve 400 para el mismo error. La excepción es `createOrder`: para cualquier `AppError` responde con el mismo formato que el `errorHandler` (`{ error: <NombreDelError>, message }`), con 404 para `TableNotFoundError`, 409 para `TableNotAvailableError` y 400 para el resto; el resto de handlers responden `{ error: <mensaje> }`.
+- `OrderController` no delega en el `errorHandler`: es el único controlador que **no llama a `next(error)`**, sino que hace su propio `try/catch` y construye la respuesta a mano. Por eso `GET /orders/:id` sí devuelve 404, pero el `PATCH` de estado devuelve 400 para el mismo error. La excepción es `createOrder`, que delega con `next(error)`: sus errores salen del `errorHandler` (`{ error: <NombreDelError>, message }`) y un error inesperado da 500. El resto de handlers responden `{ error: <mensaje> }`.
+- Un cuerpo JSON mal formado lo rechaza `express.json()` antes de llegar al router y el `errorHandler` lo trata como error no controlado: 500 en cualquier endpoint (no es un `AppError`).
 
-Errores de mesas (los textos de `message` están en inglés, como el resto; los frontends deciden por código HTTP o por el nombre en `error`):
+Errores de mesas y pedidos (los textos de `message` están en inglés, como el resto; los frontends deciden por código HTTP o por el nombre en `error`):
 
 | Error | HTTP | Cuándo |
 | --- | --- | --- |
 | `TableIdRequiredError` | 400 | Se crea un pedido sin `tableId` |
+| `OrderItemsRequiredError` | 400 | Pedido sin ítems o con `items` que no es un array |
+| `InvalidOrderItemError` | 400 | Ítem sin `dishId`, con `quantity` no entera ≥ 1 o `notes` inválidas |
+| `InvalidOrderDishError` | 400 | Plato inexistente o de otro restaurante |
 | `InvalidTableNumberError` | 400 | `number` ausente, no entero o < 1 |
 | `InvalidTableCapacityError` | 400 | `capacity` ausente, no entera o < 1 |
 | `InvalidTableStatusError` | 400 | `status` ausente (cuando es obligatorio) o fuera de la lista |
 | `InvalidPeopleCountError` | 400 | `people` ausente, no entero o < 1 |
-| `TableNotFoundError` | 404 | La mesa no existe o no pertenece al restaurante |
+| `TableNotOwnedError` | 403 | Pedir en una mesa (o liberarla con `release`) sin ser quien la ocupó |
+| `TableNotFoundError` | 404 | La mesa no existe o no pertenece al restaurante (o el cliente no ocupa ninguna en `/mine`) |
 | `DuplicatedTableNumberError` | 409 | Ya hay una mesa con ese número en el restaurante |
 | `TableNotAvailableError` | 409 | Ocupar una mesa no libre o sin capacidad, o pedir en una mesa no `ocupada` |
 | `TableOccupiedError` | 409 | Borrar una mesa ocupada |
+| `TableHasActiveOrdersError` | 409 | Borrar una mesa o sacarla de `ocupada` con pedidos activos |
+| `TableHasOrdersError` | 409 | El cliente intenta liberar (`release`) una mesa en la que ya ha pedido |
+| `ClientAlreadyHasTableError` | 409 | El cliente ya ocupa otra mesa en ese restaurante |
 
 ---
 
@@ -442,12 +464,15 @@ La clase `Database` (`config/database.ts`) encapsula `sqlite3` con una API basad
 - `get<T>()`: SELECT de una fila
 - `close()`: cierra la conexión
 - `getDb()`: acceso crudo; lanza `DatabaseNotInitializedError` si no se ha llamado a `initialize()`
+- `transaction(fn)`: ejecuta `fn` entre `BEGIN IMMEDIATE` y `COMMIT` (`ROLLBACK` si lanza). Como hay una sola conexión, marca el contexto asíncrono con `AsyncLocalStorage`: las sentencias lanzadas desde fuera de la transacción esperan a que termine (no se cuelan dentro ni se deshacen con su `ROLLBACK`), las transacciones se encolan y una transacción anidada reutiliza la actual. La usan el guardado de un pedido con sus ítems y el archivado de pedidos
 
 El módulo exporta una **instancia única** (`export const dbConfig = new Database()`) que se importa allá donde hace falta. No es un singleton con `getInstance()`: nada impide construir otra `Database`, y de hecho los tests lo hacen.
 
 La ruta del fichero se decide en el constructor: `:memory:` si `NODE_ENV=test`, y `packages/api/resttek.db` en cualquier otro caso.
 
-`initialize()` activa `PRAGMA foreign_keys = ON`, por lo que el orden de inserción importa. El seed (`scripts/seed.ts`) crea primero los restaurantes y después los empleados: antes lo hacía al revés y fallaba con `SQLITE_CONSTRAINT` sobre una base de datos vacía. El seed también crea 6 mesas por restaurante con ids fijos `rest-N-mesa-M` (la 3 ocupada y la 5 reservada) y el pedido de ejemplo usa `rest-1-mesa-3`.
+`initialize()` activa `PRAGMA foreign_keys = ON`, por lo que el orden de inserción importa. El seed (`scripts/seed.ts`) crea primero los restaurantes y después los empleados: antes lo hacía al revés y fallaba con `SQLITE_CONSTRAINT` sobre una base de datos vacía. El seed también crea 6 mesas por restaurante con ids fijos `rest-N-mesa-M` (la 3 ocupada y la 5 reservada) y el pedido de ejemplo usa `rest-1-mesa-3` (ocupada sin dueño, como si la hubiera ocupado un empleado).
+
+Las migraciones son `CREATE TABLE IF NOT EXISTS`, que no añade columnas a una tabla que ya existe. Para `restaurant_tables.occupied_by`, `runInitialMigrations()` comprueba `PRAGMA table_info` y hace `ALTER TABLE ... ADD COLUMN` si falta, así que una base de datos anterior sigue funcionando sin volver a sembrar.
 
 ---
 
@@ -456,6 +481,7 @@ La ruta del fichero se decide en el constructor: `:memory:` si `NODE_ENV=test`, 
 Con **Vitest** (`npm test` desde la raíz, o `npm run test:watch` dentro de `packages/api`). Los tests son unitarios y conviven con el código que prueban:
 
 - Dominio y casos de uso de `employee`, con dobles en `contexts/employee/application/mocks/`
-- Servicios y repositorios de `restaurant`, `ingredient`, `order` y `table`, con dobles en `repositories/mocks/` (`MockTableRepository` incluido)
+- Servicios y repositorios de `restaurant`, `ingredient`, `order` y `table`, con dobles en `repositories/mocks/` (`MockTableRepository` permite fijar los pedidos de una mesa con `setOrderStats()` y registra las mesas archivadas)
+- `Database.transaction()` (`config/database.test.ts`), los middlewares y el mapeo de errores del `errorHandler`
 
-**No hay tests de integración HTTP.** `supertest` figura como dependencia de desarrollo pero no se usa en ningún test, así que las rutas, los middlewares y el `errorHandler` no están cubiertos.
+**No hay tests de integración HTTP.** `supertest` figura como dependencia de desarrollo pero no se usa en ningún test, así que las rutas no están cubiertas.
