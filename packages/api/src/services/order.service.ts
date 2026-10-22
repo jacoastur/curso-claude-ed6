@@ -2,7 +2,8 @@ import { randomUUID } from 'crypto'
 import type { Order, OrderItem } from '@models/order.model.js'
 import { normalizeOrderStatus } from '@models/order.model.js'
 import type { OrderRepository } from '@repositories/order.repository.js'
-import { RestaurantIdRequiredError, OrderNotFoundError } from '@errors/DomainErrors.js'
+import type { TableRepository } from '@repositories/table.repository.js'
+import { RestaurantIdRequiredError, OrderNotFoundError, TableIdRequiredError, TableNotFoundError, TableNotAvailableError } from '@errors/DomainErrors.js'
 
 export interface CreateOrderRequest {
     restaurantId: string
@@ -16,11 +17,26 @@ export interface CreateOrderRequest {
 }
 
 export class OrderService {
-    constructor(private readonly orderRepository: OrderRepository) {}
+    constructor(
+        private readonly orderRepository: OrderRepository,
+        private readonly tableRepository: TableRepository
+    ) {}
 
     async create(request: CreateOrderRequest): Promise<Order> {
         if (!request.restaurantId || request.restaurantId.trim() === '') {
             throw new RestaurantIdRequiredError()
+        }
+
+        // Todo pedido va asociado a una mesa del restaurante que esté ocupada.
+        if (typeof request.tableId !== 'string' || request.tableId.trim() === '') {
+            throw new TableIdRequiredError()
+        }
+        const table = await this.tableRepository.findById(request.tableId)
+        if (!table || table.restaurantId !== request.restaurantId) {
+            throw new TableNotFoundError()
+        }
+        if (table.status !== 'ocupada') {
+            throw new TableNotAvailableError()
         }
 
         const items: OrderItem[] = []
@@ -39,7 +55,8 @@ export class OrderService {
         const order: Order = {
             id: randomUUID(),
             restaurantId: request.restaurantId,
-            tableId: request.tableId,
+            tableId: table.id,
+            tableNumber: table.number,
             clientId: request.clientId,
             createdAt: new Date(),
             items

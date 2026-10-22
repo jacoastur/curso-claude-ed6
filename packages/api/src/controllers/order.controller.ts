@@ -1,5 +1,11 @@
 import type { Request, Response } from 'express'
 import type { OrderService } from '@services/order.service.js'
+import { AppError } from '@errors/AppError.js'
+
+const CREATE_ORDER_ERROR_STATUS: Record<string, number> = {
+    TableNotFoundError: 404,
+    TableNotAvailableError: 409
+}
 
 export class OrderController {
     constructor(private readonly orderService: OrderService) {}
@@ -17,7 +23,10 @@ export class OrderController {
             })
             res.status(201).json(order)
         } catch (error) {
-            if (error instanceof Error) {
+            // Errores de dominio con el mismo formato que errorHandler.
+            if (error instanceof AppError) {
+                res.status(CREATE_ORDER_ERROR_STATUS[error.name] ?? 400).json({ error: error.name, message: error.message })
+            } else if (error instanceof Error) {
                 res.status(400).json({ error: error.message })
             } else {
                 res.status(500).json({ error: 'Internal Server Error' })
