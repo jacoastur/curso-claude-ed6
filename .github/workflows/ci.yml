@@ -1,0 +1,203 @@
+name: CI
+
+# Se ejecuta en cada PR que apunte a main o development. Para que bloquee el
+# merge hay que marcar los jobs como "required status checks" en la regla de
+# protección de cada rama (Settings → Branches).
+on:
+  pull_request:
+    branches: [main, development]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-api:
+    name: Tests API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Tests (vitest)
+        run: npm test
+
+  build-apps:
+    name: Build ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [web-admin, web-empleados, web-clientes]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build -w @resttek/${{ matrix.app }}
+
+  security-review:
+    name: Revisión de seguridad (Claude)
+    runs-on: ubuntu-latest
+    # Los PRs desde forks no reciben secretos, así que no se puede lanzar Claude.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write # para comentar el informe en el PR
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          # No dejar el GITHUB_TOKEN en .git/config, al alcance de Claude.
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Instalar Claude Code
+        run: npm install -g @anthropic-ai/claude-code@2.1.308
+
+      - name: Generar diff del PR
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mkdir -p .claude-review
+          git diff --unified=10 "$BASE_SHA...$HEAD_SHA" > .claude-review/pr.diff
+          git diff --name-status "$BASE_SHA...$HEAD_SHA" > .claude-review/files.txt
+          echo "Ficheros modificados:"
+          cat .claude-review/files.txt
+
+      - name: Analizar cambios con Claude (headless)
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            echo "::error::Falta el secreto CLAUDE_CODE_OAUTH_TOKEN en el repositorio."
+            exit 1
+          fi
+
+          # El prompt se toma de la rama base para que un PR no pueda debilitar
+          # su propia revisión. Solo si aún no existe en la base (el PR que lo
+          # introduce) se usa la versión del PR.
+          PROMPT_PATH=.github/claude/security-review-prompt.md
+          if ! git show "$BASE_SHA:$PROMPT_PATH" > .claude-review/prompt.md 2>/dev/null; then
+            echo "::warning::El prompt no existe en la rama base; se usa el del PR."
+            cp "$PROMPT_PATH" .claude-review/prompt.md
+          fi
+
+          SCHEMA='{
+            "type": "object",
+            "required": ["veredicto", "resumen", "hallazgos"],
+            "properties": {
+              "veredicto": { "type": "string", "enum": ["aprobado", "bloqueado"] },
+              "resumen": { "type": "string" },
+              "hallazgos": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["severidad", "archivo", "descripcion", "recomendacion"],
+                  "properties": {
+                    "severidad": { "type": "string", "enum": ["critica", "alta", "media", "baja"] },
+                    "archivo": { "type": "string" },
+                    "linea": { "type": "integer" },
+                    "descripcion": { "type": "string" },
+                    "recomendacion": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }'
+
+          # Solo herramientas de lectura: el diff es contenido no confiable y
+          # Claude no debe poder ejecutar comandos ni modificar nada. --restricted
+          # ignora además la configuración .claude/ del PR (hooks, permisos) y
+          # limita las herramientas de ficheros al repo; las reglas de
+          # denegación son una segunda barrera (p. ej. /proc/self/environ, donde
+          # está el token).
+          claude -p "$(cat .claude-review/prompt.md)" \
+            --restricted \
+            --allowedTools "Read,Grep,Glob" \
+            --disallowedTools "Bash" "Edit" "Write" "WebFetch" "WebSearch" \
+              "Read(//proc/**)" "Read(//sys/**)" "Read(//etc/**)" "Read(//tmp/**)" "Read(//home/runner/work/_temp/**)" "Read(~/.*/**)" \
+              "Grep(//proc/**)" "Grep(//sys/**)" "Grep(//etc/**)" "Grep(//tmp/**)" "Grep(//home/runner/work/_temp/**)" "Grep(~/.*/**)" \
+              "Read(./.git/**)" \
+            --max-turns 30 \
+            --output-format json \
+            --json-schema "$SCHEMA" \
+            > .claude-review/result.json
+
+          # Defensa en profundidad: si el token apareciera en la salida, se
+          # censura antes de publicarla en el PR o como artefacto.
+          jq --arg t "$CLAUDE_CODE_OAUTH_TOKEN" \
+            '.structured_output | walk(if type == "string" then (split($t) | join("***")) else . end)' \
+            .claude-review/result.json > .claude-review/report.json
+          rm .claude-review/result.json
+
+      - name: Publicar informe y decidir
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          REPORT=.claude-review/report.json
+          COMMENT=.claude-review/comment.md
+          VEREDICTO=$(jq -r '.veredicto' "$REPORT")
+          BLOQUEANTES=$(jq '[.hallazgos[] | select(.severidad == "critica" or .severidad == "alta")] | length' "$REPORT")
+          # El texto lo genera un modelo que ha leído contenido no confiable:
+          # se neutraliza HTML, imágenes/enlaces y menciones antes de publicarlo.
+          ESC='def esc: gsub("[\r\n]+"; " ") | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;")
+                | gsub("\\|"; "\\|") | gsub("@"; "@​") | gsub("!\\["; "!​[") | gsub("\\]\\("; "]​(");'
+
+          {
+            echo "## 🔒 Revisión de seguridad (Claude)"
+            echo
+            echo "**Veredicto:** $VEREDICTO"
+            echo
+            jq -r "$ESC"' .resumen | esc' "$REPORT"
+            echo
+            if [ "$(jq '.hallazgos | length' "$REPORT")" -gt 0 ]; then
+              echo "| Severidad | Archivo | Descripción | Recomendación |"
+              echo "|---|---|---|---|"
+              jq -r "$ESC"' .hallazgos[] | "| \(.severidad) | `\(.archivo | gsub("[`|\r\n]"; ""))\(if .linea then ":\(.linea)" else "" end)` | \(.descripcion | esc) | \(.recomendacion | esc) |"' "$REPORT"
+            else
+              echo "Sin hallazgos."
+            fi
+            echo
+            echo "<sub>Commit analizado: ${{ github.event.pull_request.head.sha }}</sub>"
+          } > "$COMMENT"
+
+          cat "$COMMENT" >> "$GITHUB_STEP_SUMMARY"
+          # Edita el último comentario del bot en vez de añadir uno nuevo en cada push.
+          gh pr comment "$PR_NUMBER" --body-file "$COMMENT" --edit-last --create-if-none
+
+          if [ "$VEREDICTO" != "aprobado" ] || [ "$BLOQUEANTES" -gt 0 ]; then
+            echo "::error::Claude ha detectado $BLOQUEANTES problema(s) de seguridad de severidad alta o crítica. Revisa el resumen del job."
+            exit 1
+          fi
+
+      - name: Guardar informe
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: security-review
+          path: .claude-review/
+          if-no-files-found: ignore
