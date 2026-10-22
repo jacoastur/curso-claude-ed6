@@ -21,8 +21,10 @@
         <div class="order-card">
           <div class="order-header">
             <span class="order-id">Pedido #{{ order.id.substring(0, 8) }}</span>
-            @if (order.tableId) {
-              <span class="table-badge table-highlight">Mesa {{ order.tableNumber ?? order.tableId }}</span>
+            @if (order.tableNumber != null) {
+              <span class="table-badge table-highlight">Mesa {{ order.tableNumber }}</span>
+            } @else {
+              <span class="table-badge table-highlight">Sin mesa</span>
             }
           </div>
           <div class="order-items">
