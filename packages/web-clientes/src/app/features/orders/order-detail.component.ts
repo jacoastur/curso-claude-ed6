@@ -21,6 +21,9 @@ import { Order, OrderItem } from '../../core/models/order.model'
             <a routerLink="/orders" class="back-link">← Volver a mis pedidos</a>
             <h1>Pedido #{{ order()!.id.substring(0, 8) }}</h1>
             <p class="order-date">{{ order()!.createdAt | date:'dd/MM/yyyy HH:mm' }}</p>
+            @if (order()!.tableNumber ?? order()!.tableId; as mesa) {
+              <p class="order-date">Mesa {{ mesa }}</p>
+            }
           </div>
         </div>
 
