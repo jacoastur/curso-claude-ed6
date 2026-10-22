@@ -408,7 +408,7 @@ Excepciones que conviene conocer:
 
 - `OrderNotFoundError` **no** está en la lista de 404. Si llegase al `errorHandler` se traduciría a 400.
 - `OrderController` no delega en el `errorHandler`: es el único controlador que **no llama a `next(error)`**, sino que hace su propio `try/catch` y construye la respuesta a mano. Por eso `GET /orders/:id` sí devuelve 404, pero el `PATCH` de estado devuelve 400 para el mismo error. La excepción es `createOrder`, que delega con `next(error)`: sus errores salen del `errorHandler` (`{ error: <NombreDelError>, message }`) y un error inesperado da 500. El resto de handlers responden `{ error: <mensaje> }`.
-- Un cuerpo JSON mal formado lo rechaza `express.json()` antes de llegar al router y el `errorHandler` lo trata como error no controlado: 500 en cualquier endpoint (no es un `AppError`).
+- Un cuerpo JSON mal formado lo rechaza `express.json()` antes de llegar al router; el `errorHandler` lo reconoce (`err.type === 'entity.parse.failed'`) y responde 400 `{ error: 'InvalidJsonError', message: 'Malformed JSON body' }` en cualquier endpoint.
 
 Errores de mesas y pedidos (los textos de `message` están en inglés, como el resto; los frontends deciden por código HTTP o por el nombre en `error`):
 

@@ -47,5 +47,11 @@ export const errorHandler = (err: any, _req: Request, res: Response, _next: Next
         return
     }
 
+    // JSON mal formado: express.json() falla antes de llegar al router
+    if (err?.type === 'entity.parse.failed') {
+        res.status(400).json({ error: 'InvalidJsonError', message: 'Malformed JSON body' })
+        return
+    }
+
     res.status(500).json({ error: 'InternalServerError', message: 'Something went wrong' })
 }

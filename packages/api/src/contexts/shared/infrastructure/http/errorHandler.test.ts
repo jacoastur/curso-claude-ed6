@@ -38,6 +38,14 @@ describe('errorHandler', () => {
         expect(handle(error)).toEqual({ status, body: { error: error.name, message: error.message } })
     })
 
+    it('should answer 400 for a malformed JSON body', () => {
+        const error = Object.assign(new SyntaxError('Unexpected token'), { type: 'entity.parse.failed', status: 400 })
+        expect(handle(error)).toEqual({
+            status: 400,
+            body: { error: 'InvalidJsonError', message: 'Malformed JSON body' }
+        })
+    })
+
     it('should answer 500 for an unexpected error', () => {
         expect(handle(new TypeError('boom'))).toEqual({
             status: 500,
