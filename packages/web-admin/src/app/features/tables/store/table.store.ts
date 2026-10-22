@@ -28,6 +28,11 @@ export class TableStore {
     }
   }
 
+  // No toca la lista: sirve para cargar una sola mesa (p. ej. en el formulario de edición)
+  getById(restaurantId: string, id: string): Promise<RestaurantTable> {
+    return firstValueFrom(this.service.getById(restaurantId, id))
+  }
+
   async create(restaurantId: string, dto: CreateTableDto): Promise<void> {
     const table = await firstValueFrom(this.service.create(restaurantId, dto))
     this._tables.update(list => [...list, table].sort((a, b) => a.number - b.number))
