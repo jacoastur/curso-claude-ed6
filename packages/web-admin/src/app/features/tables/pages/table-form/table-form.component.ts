@@ -1,13 +1,12 @@
 import { Component, inject, OnInit, signal } from '@angular/core'
+import { HttpErrorResponse } from '@angular/common/http'
 import { FormsModule } from '@angular/forms'
 import { ActivatedRoute, Router, RouterLink } from '@angular/router'
 import { LucideAngularModule } from 'lucide-angular'
-import { firstValueFrom } from 'rxjs'
 import { TableStore } from '../../store/table.store'
-import { TableService } from '../../services/table.service'
 import { TABLE_STATUSES, TABLE_STATUS_LABELS } from '../../models/table.model'
 import type { TableStatus } from '../../models/table.model'
-import { tableErrorMessage } from '../../utils/table-error'
+import { tableErrorMessage, TABLE_RELEASE_ACTIVE_ORDERS_MESSAGE } from '../../utils/table-error'
 
 // Los campos numéricos llegan como null cuando el input queda vacío
 interface TableFormModel {
@@ -26,7 +25,6 @@ interface TableFormModel {
 })
 export class TableFormComponent implements OnInit {
   private readonly store = inject(TableStore)
-  private readonly service = inject(TableService)
   private readonly route = inject(ActivatedRoute)
   private readonly router = inject(Router)
 
@@ -35,6 +33,7 @@ export class TableFormComponent implements OnInit {
   restaurantId: string = ''
   loading = signal(false)
   error = signal<string | null>(null)
+  notFound = signal(false)
 
   statuses = TABLE_STATUSES
   statusLabels = TABLE_STATUS_LABELS
@@ -61,25 +60,26 @@ export class TableFormComponent implements OnInit {
     if (id && this.restaurantId) {
       this.isEditing = true
       this.tableId = id
-      this.loadTable()
+      this.loadTable(id)
     }
   }
 
-  private async loadTable(): Promise<void> {
+  private async loadTable(id: string): Promise<void> {
     this.loading.set(true)
     try {
-      const tables = await firstValueFrom(this.service.getAll(this.restaurantId))
-      const found = tables.find(t => t.id === this.tableId)
-      if (found) {
-        this.form = {
-          number: found.number,
-          description: found.description ?? '',
-          capacity: found.capacity,
-          status: found.status
-        }
+      const table = await this.store.getById(this.restaurantId, id)
+      this.form = {
+        number: table.number,
+        description: table.description ?? '',
+        capacity: table.capacity,
+        status: table.status
       }
-    } catch {
-      this.error.set('No se pudo cargar la mesa.')
+    } catch (err) {
+      if (err instanceof HttpErrorResponse && err.status === 404) {
+        this.notFound.set(true)
+      } else {
+        this.error.set('No se pudo cargar la mesa.')
+      }
     } finally {
       this.loading.set(false)
     }
@@ -114,7 +114,7 @@ export class TableFormComponent implements OnInit {
       }
       this.router.navigate(['/restaurants', this.restaurantId, 'tables'])
     } catch (err) {
-      this.error.set(tableErrorMessage(err, 'Error al guardar la mesa.'))
+      this.error.set(tableErrorMessage(err, 'Error al guardar la mesa.', TABLE_RELEASE_ACTIVE_ORDERS_MESSAGE))
     } finally {
       this.loading.set(false)
     }

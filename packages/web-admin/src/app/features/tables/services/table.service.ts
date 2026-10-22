@@ -15,6 +15,10 @@ export class TableService {
     return this.http.get<RestaurantTable[]>(this.buildUrl(restaurantId))
   }
 
+  getById(restaurantId: string, id: string) {
+    return this.http.get<RestaurantTable>(`${this.buildUrl(restaurantId)}/${id}`)
+  }
+
   create(restaurantId: string, dto: CreateTableDto) {
     return this.http.post<RestaurantTable>(this.buildUrl(restaurantId), dto)
   }

@@ -8,48 +8,56 @@
     </div>
   </div>
 
-  @if (error()) {
-    <div class="alert-error">{{ error() }}</div>
-  }
+  @if (notFound()) {
+    <div class="empty-state card">
+      <lucide-icon name="armchair" [size]="40"></lucide-icon>
+      <p>Mesa no encontrada</p>
+      <a [routerLink]="listUrl" class="btn btn-secondary">Volver al listado</a>
+    </div>
+  } @else {
+    @if (error()) {
+      <div class="alert-error">{{ error() }}</div>
+    }
 
-  <form (ngSubmit)="onSubmit()" class="card form-card">
-    <div class="form-grid">
-      <div class="form-group">
-        <label for="number">Número de mesa</label>
-        <input id="number" type="number" class="form-control" [(ngModel)]="form.number" name="number" required min="1" step="1" placeholder="10" />
-      </div>
-
-      <div class="form-group">
-        <label for="capacity">Capacidad (comensales)</label>
-        <input id="capacity" type="number" class="form-control" [(ngModel)]="form.capacity" name="capacity" required min="1" step="1" placeholder="4" />
-      </div>
-
-      <div class="form-group form-group-full">
-        <label for="description">Descripción (opcional)</label>
-        <input id="description" type="text" class="form-control" [(ngModel)]="form.description" name="description" placeholder="Terraza" />
-      </div>
-
-      @if (isEditing) {
+    <form (ngSubmit)="onSubmit()" class="card form-card">
+      <div class="form-grid">
         <div class="form-group">
-          <label for="status">Estado</label>
-          <select id="status" class="form-control" [(ngModel)]="form.status" name="status" required>
-            @for (s of statuses; track s) {
-              <option [value]="s">{{ statusLabels[s] }}</option>
-            }
-          </select>
+          <label for="number">Número de mesa</label>
+          <input id="number" type="number" class="form-control" [(ngModel)]="form.number" name="number" required min="1" step="1" placeholder="10" />
         </div>
-      }
-    </div>
 
-    <div class="form-actions">
-      <a [routerLink]="listUrl" class="btn btn-secondary">Cancelar</a>
-      <button type="submit" class="btn btn-primary" [disabled]="loading()">
-        @if (loading()) {
-          Guardando...
-        } @else {
-          Guardar
+        <div class="form-group">
+          <label for="capacity">Capacidad (comensales)</label>
+          <input id="capacity" type="number" class="form-control" [(ngModel)]="form.capacity" name="capacity" required min="1" step="1" placeholder="4" />
+        </div>
+
+        <div class="form-group form-group-full">
+          <label for="description">Descripción (opcional)</label>
+          <input id="description" type="text" class="form-control" [(ngModel)]="form.description" name="description" placeholder="Terraza" />
+        </div>
+
+        @if (isEditing) {
+          <div class="form-group">
+            <label for="status">Estado</label>
+            <select id="status" class="form-control" [(ngModel)]="form.status" name="status" required>
+              @for (s of statuses; track s) {
+                <option [value]="s">{{ statusLabels[s] }}</option>
+              }
+            </select>
+          </div>
         }
-      </button>
-    </div>
-  </form>
+      </div>
+
+      <div class="form-actions">
+        <a [routerLink]="listUrl" class="btn btn-secondary">Cancelar</a>
+        <button type="submit" class="btn btn-primary" [disabled]="loading()">
+          @if (loading()) {
+            Guardando...
+          } @else {
+            Guardar
+          }
+        </button>
+      </div>
+    </form>
+  }
 </div>
