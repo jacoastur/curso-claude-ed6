@@ -226,6 +226,13 @@ export class CartComponent {
       },
       error: (err) => {
         this.loading.set(false)
+        if (err?.status === 403 && err.error?.error === 'TableNotOwnedError') {
+          this.cartStore.clearTable()
+          this.router.navigate(['/restaurants', restaurantId, 'mesa'], {
+            state: { aviso: 'Esa mesa ya no es tuya. Elige una mesa para continuar.' }
+          })
+          return
+        }
         if (err?.status === 404 || err?.status === 409) {
           this.cartStore.clearTable()
           this.router.navigate(['/restaurants', restaurantId, 'mesa'], {

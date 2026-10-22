@@ -21,9 +21,12 @@ import { Order, OrderItem } from '../../core/models/order.model'
             <a routerLink="/orders" class="back-link">← Volver a mis pedidos</a>
             <h1>Pedido #{{ order()!.id.substring(0, 8) }}</h1>
             <p class="order-date">{{ order()!.createdAt | date:'dd/MM/yyyy HH:mm' }}</p>
-            @if (order()!.tableNumber ?? order()!.tableId; as mesa) {
-              <p class="order-date">Mesa {{ mesa }}</p>
-            }
+            <p class="order-date">
+              {{ order()!.tableNumber ? 'Mesa ' + order()!.tableNumber : 'Sin mesa' }}
+              @if (order()!.archived) {
+                <span class="status-badge badge-archivado">Archivado</span>
+              }
+            </p>
           </div>
         </div>
 
@@ -147,6 +150,11 @@ import { Order, OrderItem } from '../../core/models/order.model'
       border-radius: 10px;
       font-size: 11px;
       font-family: 'Inter', sans-serif;
+    }
+    .badge-archivado {
+      background: var(--bg-hover);
+      color: var(--text-muted);
+      margin-left: 8px;
     }
     .status-pendiente {
       background: rgba(250, 204, 21, 0.15);

@@ -4,6 +4,7 @@ import { DecimalPipe } from '@angular/common'
 import { LucideAngularModule } from 'lucide-angular'
 import { DishService } from '../../core/services/dish.service'
 import { RestaurantService } from '../../core/services/restaurant.service'
+import { TableService } from '../../core/services/table.service'
 import { CartStore, Dish } from '../../core/store/cart.store'
 import { Restaurant } from '../../core/models/restaurant.model'
 
@@ -215,6 +216,7 @@ export class RestaurantMenuComponent implements OnInit {
   private readonly router = inject(Router)
   private readonly dishService = inject(DishService)
   private readonly restaurantService = inject(RestaurantService)
+  private readonly tableService = inject(TableService)
   readonly cartStore = inject(CartStore)
 
   readonly restaurant = signal<Restaurant | null>(null)
@@ -238,11 +240,23 @@ export class RestaurantMenuComponent implements OnInit {
 
   ngOnInit(): void {
     const restaurantId = this.route.snapshot.paramMap.get('id')!
-    if (this.cartStore.table()?.restaurantId !== restaurantId) {
-      this.router.navigate(['/restaurants', restaurantId, 'mesa'], { replaceUrl: true })
+    if (this.cartStore.table()?.restaurantId === restaurantId) {
+      this.loadData(restaurantId)
       return
     }
-    this.loadData(restaurantId)
+    this.tableService.recover(restaurantId).subscribe(result => {
+      if (result === 'restored') {
+        this.loadData(restaurantId)
+        return
+      }
+      const aviso = result === 'released'
+        ? 'Tu mesa se ha liberado al recargar; elige mesa de nuevo'
+        : result === 'error' ? 'No se pudo comprobar tu mesa; elige mesa para continuar' : undefined
+      this.router.navigate(['/restaurants', restaurantId, 'mesa'], {
+        replaceUrl: true,
+        state: { mesaComprobada: true, ...(aviso ? { aviso } : {}) }
+      })
+    })
   }
 
   private loadData(restaurantId: string): void {

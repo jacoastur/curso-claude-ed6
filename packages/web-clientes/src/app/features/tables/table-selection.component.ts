@@ -5,6 +5,8 @@ import { TableService } from '../../core/services/table.service'
 import { CartStore } from '../../core/store/cart.store'
 import { AvailableTable } from '../../core/models/table.model'
 
+const RELEASED_NOTICE = 'Tu mesa se ha liberado al recargar; elige mesa de nuevo'
+
 @Component({
   selector: 'app-table-selection',
   standalone: true,
@@ -128,6 +130,19 @@ export class TableSelectionComponent implements OnInit {
     if (typeof aviso === 'string') {
       this.notice.set(aviso)
     }
+    // Venir de la carta (que ya ha comprobado la mesa) evita repetir la llamada
+    if (history.state?.mesaComprobada || this.cartStore.table()?.restaurantId === this.restaurantId) {
+      return
+    }
+    this.tableService.recover(this.restaurantId).subscribe(result => {
+      if (result === 'restored') {
+        this.router.navigate(['/restaurants', this.restaurantId], { replaceUrl: true })
+      } else if (result === 'released') {
+        this.notice.set(RELEASED_NOTICE)
+      } else if (result === 'error') {
+        this.notice.set('No se pudo comprobar si ya tenías una mesa ocupada')
+      }
+    })
   }
 
   search(keepNotice = false): void {
@@ -167,12 +182,31 @@ export class TableSelectionComponent implements OnInit {
       },
       error: (err) => {
         this.occupying.set(false)
-        if (err?.status === 409) {
+        if (err?.status === 409 && err.error?.error === 'ClientAlreadyHasTableError') {
+          this.recoverCurrentTable()
+        } else if (err?.status === 409) {
           this.notice.set('Esa mesa acaba de ser ocupada. Elige otra de la lista actualizada.')
           this.search(true)
         } else {
           this.notice.set('No se pudo reservar la mesa. Inténtalo de nuevo.')
         }
+      }
+    })
+  }
+
+  private recoverCurrentTable(): void {
+    this.loading.set(true)
+    this.tableService.recover(this.restaurantId).subscribe(result => {
+      if (result === 'restored') {
+        this.router.navigate(['/restaurants', this.restaurantId])
+        return
+      }
+      this.loading.set(false)
+      if (result === 'error') {
+        this.notice.set('Ya tienes una mesa ocupada, pero no se pudo recuperar. Inténtalo de nuevo.')
+      } else {
+        this.notice.set(result === 'released' ? RELEASED_NOTICE : 'No se pudo reservar la mesa. Inténtalo de nuevo.')
+        this.search(true)
       }
     })
   }
