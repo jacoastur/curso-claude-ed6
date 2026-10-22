@@ -45,6 +45,11 @@ export class MesasComponent implements OnInit, OnDestroy {
     return table.status === 'ocupada' ? (this.ordersByTable().get(table.id) ?? []) : [];
   }
 
+  /** Una mesa ocupada con pedidos activos no se puede liberar (la API respondería 409). */
+  isLocked(table: RestaurantTable): boolean {
+    return this.ordersOf(table).length > 0;
+  }
+
   onStatusChange(table: RestaurantTable, event: Event): void {
     const restaurantId = this.authStore.user()?.restaurantId;
     const status = (event.target as HTMLSelectElement).value as TableStatus;

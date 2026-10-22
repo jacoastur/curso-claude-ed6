@@ -12,6 +12,7 @@ function errorMessage(err: unknown, fallback: string): string {
       case 401: return 'Sesión caducada, vuelve a iniciar sesión';
       case 403: return 'No tienes permiso para gestionar las mesas de este restaurante';
       case 404: return 'La mesa ya no existe';
+      case 409: return 'No se puede liberar la mesa: tiene pedidos sin entregar';
     }
   }
   return fallback;
@@ -24,12 +25,15 @@ export class TableStore {
   private readonly _tables = signal<RestaurantTable[]>([]);
   private readonly _loading = signal(false);
   private readonly _error = signal<string | null>(null);
+  /** Error de la última acción del usuario; la recarga de mesas no lo borra. */
+  private readonly _actionError = signal<string | null>(null);
 
   private pollingInterval: ReturnType<typeof setInterval> | null = null;
 
   readonly tables = this._tables.asReadonly();
   readonly loading = this._loading.asReadonly();
   readonly error = this._error.asReadonly();
+  readonly actionError = this._actionError.asReadonly();
 
   async loadTables(restaurantId: string): Promise<void> {
     this._loading.set(true);
@@ -45,15 +49,19 @@ export class TableStore {
   }
 
   async changeStatus(restaurantId: string, tableId: string, status: TableStatus): Promise<void> {
+    this._actionError.set(null);
     try {
       const updated = await firstValueFrom(this.tableService.changeStatus(restaurantId, tableId, { status }));
       this._tables.update(tables => tables.map(t => (t.id === tableId ? updated : t)));
-      this._error.set(null);
     } catch (err) {
-      this._error.set(errorMessage(err, 'Error al cambiar el estado de la mesa'));
+      this._actionError.set(errorMessage(err, 'Error al cambiar el estado de la mesa'));
       // Recarga para que el selector vuelva al estado real.
       await this.loadTables(restaurantId);
     }
+  }
+
+  dismissActionError(): void {
+    this._actionError.set(null);
   }
 
   startPolling(restaurantId: string): void {

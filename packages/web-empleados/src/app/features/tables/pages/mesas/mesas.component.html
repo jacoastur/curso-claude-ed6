@@ -10,6 +10,13 @@
   <div class="alert-error">{{ tableStore.error() }}</div>
 }
 
+@if (tableStore.actionError()) {
+  <div class="alert-error alert-dismissable">
+    <span>{{ tableStore.actionError() }}</span>
+    <button type="button" class="alert-close" aria-label="Cerrar" (click)="tableStore.dismissActionError()">×</button>
+  </div>
+}
+
 @if (orderStore.error()) {
   <div class="alert-error">{{ orderStore.error() }}</div>
 }
@@ -32,7 +39,11 @@
           }
           <select class="status-select" [value]="table.status" (change)="onStatusChange(table, $event)">
             @for (status of statuses; track status) {
-              <option [value]="status" [selected]="status === table.status">{{ status }}</option>
+              <option
+                [value]="status"
+                [selected]="status === table.status"
+                [disabled]="isLocked(table) && status !== 'ocupada'"
+                [title]="isLocked(table) && status !== 'ocupada' ? 'No se puede liberar la mesa: tiene pedidos sin entregar' : ''">{{ status }}</option>
             }
           </select>
 
