@@ -14,6 +14,9 @@ erDiagram
     restaurants ||--o{ orders : "tiene"
     restaurants ||--o{ restaurant_tables : "tiene"
     restaurant_tables |o--o{ orders : "table_id (sin FK)"
+    restaurant_tables |o--o{ orders_history : "table_id (sin FK)"
+    employees |o--o{ restaurant_tables : "occupied_by (sin FK)"
+    orders_history ||--o{ order_items_history : "contiene"
     dishes ||--o{ dish_ingredients : "contiene"
     ingredients ||--o{ dish_ingredients : "usado en"
     orders ||--o{ order_items : "contiene"
@@ -85,8 +88,28 @@ erDiagram
         TEXT description
         INTEGER capacity
         TEXT status
+        TEXT occupied_by
         TEXT created_at
         TEXT updated_at
+    }
+
+    orders_history {
+        TEXT id PK
+        TEXT restaurant_id FK
+        TEXT table_id
+        TEXT client_id
+        TEXT created_at
+        TEXT archived_at
+    }
+
+    order_items_history {
+        TEXT id PK
+        TEXT order_id FK
+        TEXT dish_id
+        INTEGER quantity
+        TEXT notes
+        TEXT status
+        TEXT archived_at
     }
 
     order_items {
@@ -223,6 +246,7 @@ Mesas de cada restaurante. Se llama `restaurant_tables` y no `tables` para no co
 | `description` | TEXT | Sí | Texto libre (ej: "Terraza") |
 | `capacity` | INTEGER | No | Número máximo de comensales (entero ≥ 1) |
 | `status` | TEXT | No | Estado: libre, ocupada, reservada (default: `libre`) |
+| `occupied_by` | TEXT | Sí | Id del cliente (`employees.id`) que la ocupó con `occupy`. `null` si está libre o reservada, o si la ocupó un empleado a mano. No se expone en la API |
 | `created_at` | TEXT | No | Fecha de creación |
 | `updated_at` | TEXT | No | Fecha de última actualización |
 
@@ -230,7 +254,29 @@ Mesas de cada restaurante. Se llama `restaurant_tables` y no `tables` para no co
 
 - UNIQUE (`restaurant_id`, `number`): el número no se repite dentro de un restaurante, pero sí entre restaurantes.
 - `restaurant_id` es FK a `restaurants.id`.
-- No se puede borrar una mesa `ocupada` (regla del servicio, no de la BD).
+- No se puede borrar una mesa `ocupada` ni con pedidos activos (reglas del servicio, no de la BD).
+- `occupied_by` no tiene FK. Un cliente ocupa como mucho una mesa por restaurante (regla del servicio, comprobada en el mismo `UPDATE` que ocupa la mesa).
+- La columna `occupied_by` se añadió después de crear la tabla: `runInitialMigrations()` la añade con `ALTER TABLE` si una base de datos antigua no la tiene.
+
+---
+
+### `orders_history` y `order_items_history`
+
+Histórico de pedidos. Cuando una mesa **sale de `ocupada`** (a `libre` o `reservada`) o **se borra**, sus pedidos se mueven en una transacción de `orders`/`order_items` a estas tablas, con la fecha del archivado. Así cada ocupación de una mesa empieza sin pedidos, y "pedidos de la ocupación actual" son los de la mesa que siguen en `orders`.
+
+`orders_history` tiene las mismas columnas que `orders` más `archived_at`; `order_items_history`, las de `order_items` más `archived_at`.
+
+| Columna | Tipo | Nullable | Descripción |
+| --- | --- | --- | --- |
+| `archived_at` | TEXT | No | Fecha en que se archivó (ISO 8601) |
+
+**Restricciones:**
+
+- `orders_history.restaurant_id` es FK a `restaurants.id`.
+- `order_items_history.order_id` es FK a `orders_history.id` con `ON DELETE CASCADE`.
+- `order_items_history.dish_id` **no** tiene FK, a diferencia de `order_items`.
+
+Los pedidos archivados siguen apareciendo en `GET /orders/mine` y `GET /orders/:id` con `archived: true`, pero no en `GET /orders/active`.
 
 ---
 
@@ -263,6 +309,9 @@ Líneas de pedido. Cada ítem es un plato con cantidad y estado.
 | Restaurant → Orders | 1:N | Un restaurante tiene muchos pedidos |
 | Restaurant → Tables | 1:N | Un restaurante tiene muchas mesas (`restaurant_tables`) |
 | Table → Orders | 1:N | Una mesa ocupada puede tener varios pedidos (`orders.table_id`, sin FK) |
+| Table → OrdersHistory | 1:N | Pedidos de ocupaciones anteriores de la mesa |
+| Employee (cliente) → Table | 1:N | Un cliente ocupa como mucho una mesa por restaurante (`restaurant_tables.occupied_by`, sin FK) |
+| OrdersHistory → OrderItemsHistory | 1:N | Ítems de un pedido archivado |
 | Dish ↔ Ingredient | N:M | Un plato usa varios ingredientes (via `dish_ingredients`) |
 | Order → OrderItems | 1:N | Un pedido tiene varios ítems |
 | Dish → OrderItems | 1:N | Un plato puede estar en varios ítems de pedido |

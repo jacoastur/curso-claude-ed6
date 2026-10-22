@@ -25,6 +25,8 @@ export interface Order {
     items: OrderItem[]
     restaurantName?: string
     restaurantLogoUrl?: string | null
+    /** Solo en los pedidos archivados al liberar o borrar su mesa. */
+    archived?: boolean
 }
 
 export function normalizeOrderStatus(value: string): OrderStatusType {

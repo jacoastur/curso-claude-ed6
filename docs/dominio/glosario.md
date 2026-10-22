@@ -17,7 +17,8 @@ Terminología del dominio y conceptos técnicos utilizados en el proyecto Restte
 | **DishIngredient** | Relación entre un plato y un ingrediente, con la cantidad necesaria. |
 | **Order** | Pedido realizado por un cliente. Contiene ítems (platos) y está asociado a un restaurante. |
 | **OrderItem** | Línea de un pedido: un plato con cantidad, notas opcionales y estado. |
-| **Mesa** (`RestaurantTable`) | Mesa de un restaurante, con número (único en el restaurante), descripción opcional, capacidad (comensales) y estado. Todo pedido va asociado a una mesa ocupada. Tabla `restaurant_tables`. |
+| **Mesa** (`RestaurantTable`) | Mesa de un restaurante, con número (único en el restaurante), descripción opcional, capacidad (comensales) y estado. Todo pedido va asociado a una mesa ocupada, y solo puede pedir en ella el cliente que la ocupó. Tabla `restaurant_tables`. |
+| **Pedido archivado** | Pedido de una ocupación anterior de la mesa: se mueve a `orders_history` cuando la mesa sale de `ocupada` o se borra. El cliente lo sigue viendo (`archived: true`), pero ya no está entre los pedidos activos. |
 
 Dos particularidades del modelo que conviene tener presentes:
 
@@ -49,11 +50,16 @@ El valor almacenado es `manager`; "gerente" es solo su traducción en la interfa
 
 | Estado | Descripción | Quién lo cambia |
 | --- | --- | --- |
-| **libre** | La mesa está disponible y aparece a los clientes si su capacidad es suficiente. | — (estado inicial); admin, manager o camarero al liberarla |
-| **ocupada** | La mesa tiene clientes. Solo en este estado se pueden crear pedidos para ella y no se puede borrar. | el cliente al elegirla y pulsar *Continuar*; también admin, manager o camarero manualmente |
+| **libre** | La mesa está disponible y aparece a los clientes si su capacidad es suficiente. | — (estado inicial); el cliente con *release* si no ha pedido; admin, manager o camarero |
+| **ocupada** | La mesa tiene clientes. Si la ocupó un cliente, solo él puede pedir en ella; si la ocupó un empleado a mano, no tiene dueño y nadie puede pedir. No se puede borrar. | el cliente al elegirla y pulsar *Continuar*; también admin, manager o camarero manualmente |
 | **reservada** | Apartada a mano; no se ofrece a los clientes ni admite pedidos. No hay reservas con fecha y hora. | admin, manager o camarero |
 
-La mesa **no se libera sola** al entregar o pagar el pedido: la libera siempre un empleado desde la página *Mesas* de web-empleados (o el admin).
+Reglas de las transiciones:
+
+- Un cliente ocupa **como mucho una mesa por restaurante**.
+- **No se puede sacar una mesa de `ocupada` con pedidos activos** (algún ítem sin entregar): primero hay que servirlo todo. Al salir de `ocupada` se olvida quién la ocupaba y sus pedidos se **archivan**.
+- El cliente puede liberar su mesa (*release*) solo si todavía no ha pedido nada; si ya ha pedido, la libera un empleado desde la página *Mesas* de web-empleados (o el admin).
+- La mesa **no se libera sola** al entregar o pagar el pedido.
 
 ### Categorías de Platos
 

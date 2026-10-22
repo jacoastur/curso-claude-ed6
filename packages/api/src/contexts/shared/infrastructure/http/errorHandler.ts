@@ -12,7 +12,14 @@ const NOT_FOUND_ERRORS = [
 const CONFLICT_ERRORS = [
     'DuplicatedTableNumberError',
     'TableNotAvailableError',
-    'TableOccupiedError'
+    'TableOccupiedError',
+    'TableHasActiveOrdersError',
+    'TableHasOrdersError',
+    'ClientAlreadyHasTableError'
+]
+
+const FORBIDDEN_ERRORS = [
+    'TableNotOwnedError'
 ]
 
 const UNAUTHORIZED_ERRORS = [
@@ -27,6 +34,8 @@ export const errorHandler = (err: any, _req: Request, res: Response, _next: Next
             statusCode = 404
         } else if (UNAUTHORIZED_ERRORS.includes(err.name)) {
             statusCode = 401
+        } else if (FORBIDDEN_ERRORS.includes(err.name)) {
+            statusCode = 403
         } else if (CONFLICT_ERRORS.includes(err.name)) {
             statusCode = 409
         }

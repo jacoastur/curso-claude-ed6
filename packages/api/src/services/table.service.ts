@@ -1,15 +1,20 @@
 import { randomUUID } from 'crypto'
-import type { RestaurantTable } from '@models/table.model.js'
+import type { RestaurantTable, TableStatusType } from '@models/table.model.js'
 import { normalizeTableStatus } from '@models/table.model.js'
 import type { TableRepository } from '@repositories/table.repository.js'
+import { KeyedLock, restaurantLock } from '@services/restaurant-lock.js'
 import {
+    ClientAlreadyHasTableError,
     DuplicatedTableNumberError,
     InvalidPeopleCountError,
     InvalidTableCapacityError,
     InvalidTableNumberError,
     RestaurantIdRequiredError,
+    TableHasActiveOrdersError,
+    TableHasOrdersError,
     TableNotAvailableError,
     TableNotFoundError,
+    TableNotOwnedError,
     TableOccupiedError
 } from '@errors/DomainErrors.js'
 
@@ -29,11 +34,23 @@ export interface UpdateTableDTO {
     status: unknown
 }
 
+export interface MyTable {
+    table: RestaurantTable
+    hasOrders: boolean
+}
+
 const isPositiveInteger = (value: unknown): value is number =>
     typeof value === 'number' && Number.isInteger(value) && value >= 1
 
+/**
+ * Las operaciones que comprueban y luego escriben se ejecutan con el lock del restaurante,
+ * compartido con OrderService, para que no se crucen entre peticiones concurrentes.
+ */
 export class TableService {
-    constructor(private readonly tableRepository: TableRepository) {}
+    constructor(
+        private readonly tableRepository: TableRepository,
+        private readonly lock: KeyedLock = restaurantLock
+    ) {}
 
     async create(dto: CreateTableDTO): Promise<RestaurantTable> {
         const now = new Date().toISOString()
@@ -44,40 +61,63 @@ export class TableService {
             description: dto.description,
             capacity: dto.capacity,
             status: dto.status ?? 'libre',
+            occupiedBy: null,
             createdAt: now,
             updatedAt: now
         })
 
-        await this.assertNumberIsFree(table)
-        await this.tableRepository.save(table)
-        return table
+        return this.lock.run(table.restaurantId, async () => {
+            await this.assertNumberIsFree(table)
+            await this.tableRepository.save(table)
+            return table
+        })
     }
 
     async update(restaurantId: string, id: string, dto: UpdateTableDTO): Promise<RestaurantTable> {
-        const existing = await this.findById(restaurantId, id)
+        return this.lock.run(restaurantId, async () => {
+            const existing = await this.findById(restaurantId, id)
 
-        const updated = this.buildTable({
-            id: existing.id,
-            restaurantId: existing.restaurantId,
-            number: dto.number,
-            description: dto.description,
-            capacity: dto.capacity,
-            status: dto.status,
-            createdAt: existing.createdAt,
-            updatedAt: new Date().toISOString()
+            const updated = this.buildTable({
+                id: existing.id,
+                restaurantId: existing.restaurantId,
+                number: dto.number,
+                description: dto.description,
+                capacity: dto.capacity,
+                status: dto.status,
+                occupiedBy: existing.occupiedBy,
+                createdAt: existing.createdAt,
+                updatedAt: new Date().toISOString()
+            })
+
+            await this.assertNumberIsFree(updated)
+            return this.saveWithStatus(existing, updated)
         })
+    }
 
-        await this.assertNumberIsFree(updated)
-        await this.tableRepository.save(updated)
-        return updated
+    async changeStatus(restaurantId: string, id: string, status: unknown): Promise<RestaurantTable> {
+        const newStatus = normalizeTableStatus(status)
+        return this.lock.run(restaurantId, async () => {
+            const existing = await this.findById(restaurantId, id)
+            if (newStatus === existing.status) {
+                return existing
+            }
+            return this.saveWithStatus(existing, { ...existing, status: newStatus, updatedAt: new Date().toISOString() })
+        })
     }
 
     async delete(restaurantId: string, id: string): Promise<void> {
-        const existing = await this.findById(restaurantId, id)
-        if (existing.status === 'ocupada') {
-            throw new TableOccupiedError()
-        }
-        await this.tableRepository.delete(id)
+        await this.lock.run(restaurantId, async () => {
+            const existing = await this.findById(restaurantId, id)
+            if (existing.status === 'ocupada') {
+                throw new TableOccupiedError()
+            }
+            const stats = await this.tableRepository.getOrderStats(id)
+            if (stats.activeOrders > 0) {
+                throw new TableHasActiveOrdersError()
+            }
+            // El repositorio archiva los pedidos completados que queden.
+            await this.tableRepository.delete(id)
+        })
     }
 
     async findById(restaurantId: string, id: string): Promise<RestaurantTable> {
@@ -96,26 +136,77 @@ export class TableService {
         return this.tableRepository.findAvailable(restaurantId, this.validatePeople(people))
     }
 
-    async changeStatus(restaurantId: string, id: string, status: unknown): Promise<RestaurantTable> {
-        const existing = await this.findById(restaurantId, id)
-        const updated: RestaurantTable = {
-            ...existing,
-            status: normalizeTableStatus(status),
-            updatedAt: new Date().toISOString()
+    async findMine(restaurantId: string, clientId: string): Promise<MyTable> {
+        const table = await this.tableRepository.findByOccupant(restaurantId, clientId)
+        if (!table) {
+            throw new TableNotFoundError()
         }
-        await this.tableRepository.updateStatus(id, updated.status, updated.updatedAt)
-        return updated
+        const stats = await this.tableRepository.getOrderStats(table.id)
+        return { table, hasOrders: stats.orders > 0 }
     }
 
-    async occupy(restaurantId: string, id: string, people: unknown): Promise<RestaurantTable> {
+    async occupy(restaurantId: string, id: string, people: unknown, clientId: string): Promise<RestaurantTable> {
         const validPeople = this.validatePeople(people)
-        await this.findById(restaurantId, id)
 
-        const occupied = await this.tableRepository.occupyIfFree(id, restaurantId, validPeople, new Date().toISOString())
-        if (!occupied) {
+        return this.lock.run(restaurantId, async () => {
+            // Camino feliz en una sola consulta; las lecturas siguientes solo explican el fallo.
+            const occupied = await this.tableRepository.occupyIfFree(id, restaurantId, validPeople, clientId, new Date().toISOString())
+            if (occupied) {
+                return occupied
+            }
+
+            await this.findById(restaurantId, id)
+            const current = await this.tableRepository.findByOccupant(restaurantId, clientId)
+            if (current && current.id !== id) {
+                throw new ClientAlreadyHasTableError()
+            }
             throw new TableNotAvailableError()
+        })
+    }
+
+    async release(restaurantId: string, id: string, clientId: string): Promise<RestaurantTable> {
+        return this.lock.run(restaurantId, async () => {
+            const existing = await this.findById(restaurantId, id)
+            if (existing.status !== 'ocupada' || existing.occupiedBy !== clientId) {
+                throw new TableNotOwnedError()
+            }
+            const stats = await this.tableRepository.getOrderStats(id)
+            if (stats.orders > 0) {
+                throw new TableHasOrdersError()
+            }
+
+            const released: RestaurantTable = { ...existing, status: 'libre', occupiedBy: null, updatedAt: new Date().toISOString() }
+            await this.tableRepository.save(released)
+            return released
+        })
+    }
+
+    /**
+     * Aplica las reglas del cambio de estado y guarda:
+     * - salir de `ocupada` exige que no haya pedidos activos, limpia el dueño y archiva los pedidos;
+     * - entrar en `ocupada` a mano deja la mesa sin dueño;
+     * - mantenerse en `ocupada` conserva dueño y pedidos.
+     */
+    private async saveWithStatus(existing: RestaurantTable, updated: RestaurantTable): Promise<RestaurantTable> {
+        const leavesOccupied = existing.status === 'ocupada' && updated.status !== 'ocupada'
+
+        if (leavesOccupied) {
+            const stats = await this.tableRepository.getOrderStats(existing.id)
+            if (stats.activeOrders > 0) {
+                throw new TableHasActiveOrdersError()
+            }
         }
-        return this.findById(restaurantId, id)
+
+        const toSave: RestaurantTable = {
+            ...updated,
+            occupiedBy: this.ownerAfter(existing, updated.status)
+        }
+        await this.tableRepository.save(toSave, { archiveOrders: leavesOccupied })
+        return toSave
+    }
+
+    private ownerAfter(existing: RestaurantTable, newStatus: TableStatusType): string | null {
+        return existing.status === 'ocupada' && newStatus === 'ocupada' ? existing.occupiedBy : null
     }
 
     private validatePeople(people: unknown): number {
@@ -139,6 +230,7 @@ export class TableService {
         description: unknown
         capacity: unknown
         status: unknown
+        occupiedBy: string | null
         createdAt: string
         updatedAt: string
     }): RestaurantTable {
@@ -164,6 +256,7 @@ export class TableService {
             description,
             capacity: props.capacity,
             status,
+            occupiedBy: props.occupiedBy,
             createdAt: props.createdAt,
             updatedAt: props.updatedAt
         }

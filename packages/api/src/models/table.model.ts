@@ -11,8 +11,16 @@ export interface RestaurantTable {
     description: string | null
     capacity: number
     status: TableStatusType
+    /** Cliente que la ocupó con `occupy`. Interno: no se devuelve en la API. */
+    occupiedBy: string | null
     createdAt: string
     updatedAt: string
+}
+
+/** Contadores de los pedidos de la ocupación actual (los que siguen en `orders`). */
+export interface TableOrderStats {
+    orders: number
+    activeOrders: number
 }
 
 export function normalizeTableStatus(value: unknown): TableStatusType {

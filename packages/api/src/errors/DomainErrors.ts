@@ -215,3 +215,45 @@ export class TableOccupiedError extends AppError {
     super('Cannot delete an occupied table')
   }
 }
+
+export class TableNotOwnedError extends AppError {
+  constructor() {
+    super('Table is not occupied by this client')
+  }
+}
+
+export class TableHasActiveOrdersError extends AppError {
+  constructor() {
+    super('Table has active orders')
+  }
+}
+
+export class TableHasOrdersError extends AppError {
+  constructor() {
+    super('Table already has orders')
+  }
+}
+
+export class ClientAlreadyHasTableError extends AppError {
+  constructor() {
+    super('Client already occupies a table in this restaurant')
+  }
+}
+
+export class OrderItemsRequiredError extends AppError {
+  constructor() {
+    super('Order must contain at least one item')
+  }
+}
+
+export class InvalidOrderItemError extends AppError {
+  constructor() {
+    super('Each item must have a dishId and an integer quantity greater than or equal to 1')
+  }
+}
+
+export class InvalidOrderDishError extends AppError {
+  constructor() {
+    super('Dish not found in this restaurant')
+  }
+}
