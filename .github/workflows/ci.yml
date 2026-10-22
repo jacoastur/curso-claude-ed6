@@ -20,9 +20,9 @@ jobs:
     name: Tests API
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -40,9 +40,9 @@ jobs:
       matrix:
         app: [web-admin, web-empleados, web-clientes]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -62,16 +62,18 @@ jobs:
       contents: read
       pull-requests: write # para comentar el informe en el PR
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          # No dejar el GITHUB_TOKEN en .git/config, al alcance de Claude.
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
       - name: Instalar Claude Code
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g @anthropic-ai/claude-code@2.1.308
 
       - name: Generar diff del PR
         env:
@@ -87,7 +89,17 @@ jobs:
       - name: Analizar cambios con Claude (headless)
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          # El prompt se toma de la rama base para que un PR no pueda debilitar
+          # su propia revisión. Solo si aún no existe en la base (el PR que lo
+          # introduce) se usa la versión del PR.
+          PROMPT_PATH=.github/claude/security-review-prompt.md
+          if ! git show "$BASE_SHA:$PROMPT_PATH" > .claude-review/prompt.md 2>/dev/null; then
+            echo "::warning::El prompt no existe en la rama base; se usa el del PR."
+            cp "$PROMPT_PATH" .claude-review/prompt.md
+          fi
+
           SCHEMA='{
             "type": "object",
             "required": ["veredicto", "resumen", "hallazgos"],
@@ -112,15 +124,26 @@ jobs:
           }'
 
           # Solo herramientas de lectura: el diff es contenido no confiable y
-          # Claude no debe poder ejecutar comandos ni modificar nada.
-          claude -p "$(cat .github/claude/security-review-prompt.md)" \
+          # Claude no debe poder ejecutar comandos ni modificar nada. Se le
+          # prohíbe además leer fuera del repo (p. ej. /proc/self/environ, donde
+          # está el token).
+          claude -p "$(cat .claude-review/prompt.md)" \
             --allowedTools "Read,Grep,Glob" \
+            --disallowedTools "Bash" "Edit" "Write" "WebFetch" "WebSearch" \
+              "Read(//proc/**)" "Read(//sys/**)" "Read(//etc/**)" "Read(//tmp/**)" "Read(//home/runner/work/_temp/**)" "Read(~/.*/**)" \
+              "Grep(//proc/**)" "Grep(//sys/**)" "Grep(//etc/**)" "Grep(//tmp/**)" "Grep(//home/runner/work/_temp/**)" "Grep(~/.*/**)" \
+              "Read(./.git/**)" \
             --max-turns 30 \
             --output-format json \
             --json-schema "$SCHEMA" \
             > .claude-review/result.json
 
-          jq '.structured_output' .claude-review/result.json > .claude-review/report.json
+          # Defensa en profundidad: si el token apareciera en la salida, se
+          # censura antes de publicarla en el PR o como artefacto.
+          jq --arg t "$CLAUDE_CODE_OAUTH_TOKEN" \
+            '.structured_output | walk(if type == "string" then (split($t) | join("***")) else . end)' \
+            .claude-review/result.json > .claude-review/report.json
+          rm .claude-review/result.json
 
       - name: Publicar informe y decidir
         env:
@@ -131,18 +154,22 @@ jobs:
           COMMENT=.claude-review/comment.md
           VEREDICTO=$(jq -r '.veredicto' "$REPORT")
           BLOQUEANTES=$(jq '[.hallazgos[] | select(.severidad == "critica" or .severidad == "alta")] | length' "$REPORT")
+          # El texto lo genera un modelo que ha leído contenido no confiable:
+          # se neutraliza HTML, imágenes/enlaces y menciones antes de publicarlo.
+          ESC='def esc: gsub("[\r\n]+"; " ") | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;")
+                | gsub("\\|"; "\\|") | gsub("@"; "@​") | gsub("!\\["; "!​[") | gsub("\\]\\("; "]​(");'
 
           {
             echo "## 🔒 Revisión de seguridad (Claude)"
             echo
             echo "**Veredicto:** $VEREDICTO"
             echo
-            jq -r '.resumen' "$REPORT"
+            jq -r "$ESC"' .resumen | esc' "$REPORT"
             echo
             if [ "$(jq '.hallazgos | length' "$REPORT")" -gt 0 ]; then
               echo "| Severidad | Archivo | Descripción | Recomendación |"
               echo "|---|---|---|---|"
-              jq -r '.hallazgos[] | "| \(.severidad) | `\(.archivo)\(if .linea then ":\(.linea)" else "" end)` | \(.descripcion | gsub("\n"; " ")) | \(.recomendacion | gsub("\n"; " ")) |"' "$REPORT"
+              jq -r "$ESC"' .hallazgos[] | "| \(.severidad) | `\(.archivo | gsub("[`|\r\n]"; ""))\(if .linea then ":\(.linea)" else "" end)` | \(.descripcion | esc) | \(.recomendacion | esc) |"' "$REPORT"
             else
               echo "Sin hallazgos."
             fi
@@ -161,7 +188,7 @@ jobs:
 
       - name: Guardar informe
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: security-review
           path: .claude-review/
