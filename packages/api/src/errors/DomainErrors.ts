@@ -162,3 +162,98 @@ export class OrderNotFoundError extends AppError {
   }
 }
 
+export class TableIdRequiredError extends AppError {
+  constructor() {
+    super('Table ID is required')
+  }
+}
+
+export class TableNotFoundError extends AppError {
+  constructor() {
+    super('Table not found')
+  }
+}
+
+export class InvalidTableNumberError extends AppError {
+  constructor() {
+    super('Table number must be an integer greater than or equal to 1')
+  }
+}
+
+export class InvalidTableCapacityError extends AppError {
+  constructor() {
+    super('Table capacity must be an integer greater than or equal to 1')
+  }
+}
+
+export class InvalidTableStatusError extends AppError {
+  constructor(message?: string) {
+    super(message ?? 'Invalid table status')
+  }
+}
+
+export class InvalidPeopleCountError extends AppError {
+  constructor() {
+    super('People count must be an integer greater than or equal to 1')
+  }
+}
+
+export class DuplicatedTableNumberError extends AppError {
+  constructor() {
+    super('Table number is already in use in this restaurant')
+  }
+}
+
+export class TableNotAvailableError extends AppError {
+  constructor() {
+    super('Table is not available')
+  }
+}
+
+export class TableOccupiedError extends AppError {
+  constructor() {
+    super('Cannot delete an occupied table')
+  }
+}
+
+export class TableNotOwnedError extends AppError {
+  constructor() {
+    super('Table is not occupied by this client')
+  }
+}
+
+export class TableHasActiveOrdersError extends AppError {
+  constructor() {
+    super('Table has active orders')
+  }
+}
+
+export class TableHasOrdersError extends AppError {
+  constructor() {
+    super('Table already has orders')
+  }
+}
+
+export class ClientAlreadyHasTableError extends AppError {
+  constructor() {
+    super('Client already occupies a table in this restaurant')
+  }
+}
+
+export class OrderItemsRequiredError extends AppError {
+  constructor() {
+    super('Order must contain at least one item')
+  }
+}
+
+export class InvalidOrderItemError extends AppError {
+  constructor() {
+    super('Each item must have a dishId and an integer quantity greater than or equal to 1')
+  }
+}
+
+export class InvalidOrderDishError extends AppError {
+  constructor() {
+    super('Dish not found in this restaurant')
+  }
+}

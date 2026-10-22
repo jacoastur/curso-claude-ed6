@@ -45,6 +45,17 @@ import { OrderService } from '../../core/services/order.service'
 
           <aside class="order-summary card">
             <h3>Resumen</h3>
+            @if (cartStore.table(); as table) {
+              <div class="summary-row">
+                <span>Mesa</span>
+                <strong>{{ table.number }}</strong>
+              </div>
+            } @else {
+              <p class="error-msg">Elige una mesa para poder confirmar el pedido.</p>
+              <a [routerLink]="['/restaurants', cartStore.restaurantId(), 'mesa']" class="btn btn-secondary" style="width: 100%; justify-content: center;">
+                Elegir mesa
+              </a>
+            }
             <div class="summary-row">
               <span>Items ({{ cartStore.itemCount() }})</span>
               <span>{{ cartStore.total() | number:'1.2-2' }} €</span>
@@ -54,7 +65,7 @@ import { OrderService } from '../../core/services/order.service'
               <strong>{{ cartStore.total() | number:'1.2-2' }} €</strong>
             </div>
             <button class="btn btn-primary" style="width: 100%; justify-content: center; margin-top: 16px;" 
-                    [disabled]="loading()" (click)="confirmOrder()">
+                    [disabled]="loading() || !cartStore.table()" (click)="confirmOrder()">
               @if (loading()) {
                 Confirmando...
               } @else if (error()) {
@@ -196,7 +207,8 @@ export class CartComponent {
 
   confirmOrder(): void {
     const restaurantId = this.cartStore.restaurantId()
-    if (!restaurantId || this.cartStore.items().length === 0) return
+    const table = this.cartStore.table()
+    if (!restaurantId || !table || table.restaurantId !== restaurantId || this.cartStore.items().length === 0) return
 
     this.loading.set(true)
     this.error.set(null)
@@ -207,14 +219,30 @@ export class CartComponent {
       notes: item.notes || null
     }))
 
-    this.orderService.createOrder(restaurantId, items).subscribe({
+    this.orderService.createOrder(restaurantId, table.id, items).subscribe({
       next: (order) => {
         this.cartStore.clear()
         this.router.navigate(['/orders', order.id])
       },
       error: (err) => {
-        this.error.set('Error al confirmar el pedido. Inténtalo de nuevo.')
         this.loading.set(false)
+        if (err?.status === 403 && err.error?.error === 'TableNotOwnedError') {
+          this.cartStore.clearTable()
+          this.router.navigate(['/restaurants', restaurantId, 'mesa'], {
+            state: { aviso: 'Esa mesa ya no es tuya. Elige una mesa para continuar.' }
+          })
+          return
+        }
+        if (err?.status === 404 || err?.status === 409) {
+          this.cartStore.clearTable()
+          this.router.navigate(['/restaurants', restaurantId, 'mesa'], {
+            state: { aviso: 'La mesa ya no está disponible. Elige una mesa para continuar.' }
+          })
+          return
+        }
+        this.error.set(err?.status === 400
+          ? 'No se pudo crear el pedido: revisa la mesa y los platos.'
+          : 'Error al confirmar el pedido. Inténtalo de nuevo.')
       }
     })
   }

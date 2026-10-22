@@ -19,11 +19,14 @@ export interface Order {
     id: string
     restaurantId: string
     tableId: string | null
+    tableNumber?: number
     clientId: string | null
     createdAt: Date
     items: OrderItem[]
     restaurantName?: string
     restaurantLogoUrl?: string | null
+    /** Solo en los pedidos archivados al liberar o borrar su mesa. */
+    archived?: boolean
 }
 
 export function normalizeOrderStatus(value: string): OrderStatusType {
