@@ -1,4 +1,4 @@
-# {{Título del plan}}
+# Plan de la issue #{{número}}: {{título}}
 
 - **Tipo**: {{funcionalidad | bug}}
 - **Fecha**: {{AAAA-MM-DD}}
