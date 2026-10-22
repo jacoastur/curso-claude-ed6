@@ -1,5 +1,6 @@
 import sqlite3 from 'sqlite3'
 import path from 'path'
+import { AsyncLocalStorage } from 'async_hooks'
 import { fileURLToPath } from 'url'
 import { DatabaseNotInitializedError } from '@errors/DomainErrors.js'
 
@@ -9,6 +10,11 @@ const __dirname = path.dirname(__filename)
 export class Database {
     private db: sqlite3.Database | null = null
     private dbPath: string
+    // Hay una sola conexión: mientras dura una transacción, las sentencias lanzadas fuera
+    // de ella esperan a que termine para no colarse dentro (ni deshacerse con un ROLLBACK).
+    private readonly transactionContext = new AsyncLocalStorage<true>()
+    private transactionQueue: Promise<void> = Promise.resolve()
+    private activeTransaction: Promise<void> | null = null
 
     constructor() {
         const env = process.env.NODE_ENV || 'development'
@@ -45,7 +51,48 @@ export class Database {
         return this.db
     }
 
+    /**
+     * Ejecuta `fn` dentro de una transacción (BEGIN IMMEDIATE / COMMIT, ROLLBACK si falla).
+     * Las transacciones se encolan y las llamadas anidadas reutilizan la transacción en curso.
+     */
+    public async transaction<T>(fn: () => Promise<T>): Promise<T> {
+        if (this.transactionContext.getStore()) {
+            return fn()
+        }
+
+        let finish!: () => void
+        const current = new Promise<void>(resolve => { finish = resolve })
+        const previous = this.transactionQueue
+        this.transactionQueue = previous.then(() => current)
+        await previous
+
+        this.activeTransaction = current
+        try {
+            return await this.transactionContext.run(true, async () => {
+                await this.run('BEGIN IMMEDIATE')
+                try {
+                    const result = await fn()
+                    await this.run('COMMIT')
+                    return result
+                } catch (error) {
+                    await this.run('ROLLBACK')
+                    throw error
+                }
+            })
+        } finally {
+            this.activeTransaction = null
+            finish()
+        }
+    }
+
+    private async waitForOtherTransactions(): Promise<void> {
+        while (this.activeTransaction && !this.transactionContext.getStore()) {
+            await this.activeTransaction
+        }
+    }
+
     public async run(sql: string, params: any[] = []): Promise<sqlite3.RunResult> {
+        await this.waitForOtherTransactions()
         return new Promise((resolve, reject) => {
             this.getDb().run(sql, params, function (err) {
                 if (err) return reject(err)
@@ -55,6 +102,7 @@ export class Database {
     }
 
     public async all<T>(sql: string, params: any[] = []): Promise<T[]> {
+        await this.waitForOtherTransactions()
         return new Promise((resolve, reject) => {
             this.getDb().all(sql, params, (err, rows) => {
                 if (err) return reject(err)
@@ -64,6 +112,7 @@ export class Database {
     }
 
     public async get<T>(sql: string, params: any[] = []): Promise<T | undefined> {
+        await this.waitForOtherTransactions()
         return new Promise((resolve, reject) => {
             this.getDb().get(sql, params, (err, row) => {
                 if (err) return reject(err)
@@ -172,15 +221,47 @@ export class Database {
                 description TEXT,
                 capacity INTEGER NOT NULL,
                 status TEXT NOT NULL DEFAULT 'libre',
+                occupied_by TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(restaurant_id, number),
                 FOREIGN KEY(restaurant_id) REFERENCES restaurants(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS orders_history (
+                id TEXT PRIMARY KEY,
+                restaurant_id TEXT NOT NULL,
+                table_id TEXT,
+                client_id TEXT,
+                created_at TEXT NOT NULL,
+                archived_at TEXT NOT NULL,
+                FOREIGN KEY(restaurant_id) REFERENCES restaurants(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS order_items_history (
+                id TEXT PRIMARY KEY,
+                order_id TEXT NOT NULL,
+                dish_id TEXT NOT NULL,
+                quantity INTEGER NOT NULL,
+                notes TEXT,
+                status TEXT NOT NULL,
+                archived_at TEXT NOT NULL,
+                FOREIGN KEY(order_id) REFERENCES orders_history(id) ON DELETE CASCADE
             )
         `.split(';')
 
         for (const q of queries) {
             if (q.trim()) await this.run(q)
+        }
+
+        // CREATE TABLE IF NOT EXISTS no añade columnas a una tabla ya creada.
+        await this.addColumnIfMissing('restaurant_tables', 'occupied_by', 'TEXT')
+    }
+
+    private async addColumnIfMissing(table: string, column: string, definition: string): Promise<void> {
+        const columns = await this.all<{ name: string }>(`PRAGMA table_info(${table})`)
+        if (!columns.some(c => c.name === column)) {
+            await this.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
         }
     }
 }
