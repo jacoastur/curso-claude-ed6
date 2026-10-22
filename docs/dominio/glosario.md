@@ -17,6 +17,7 @@ Terminología del dominio y conceptos técnicos utilizados en el proyecto Restte
 | **DishIngredient** | Relación entre un plato y un ingrediente, con la cantidad necesaria. |
 | **Order** | Pedido realizado por un cliente. Contiene ítems (platos) y está asociado a un restaurante. |
 | **OrderItem** | Línea de un pedido: un plato con cantidad, notas opcionales y estado. |
+| **Mesa** (`RestaurantTable`) | Mesa de un restaurante, con número (único en el restaurante), descripción opcional, capacidad (comensales) y estado. Todo pedido va asociado a una mesa ocupada. Tabla `restaurant_tables`. |
 
 Dos particularidades del modelo que conviene tener presentes:
 
@@ -29,11 +30,11 @@ Dos particularidades del modelo que conviene tener presentes:
 | --- | --- | --- |
 | **admin** | Administrador del sistema. Gestiona restaurantes, empleados y configuración. | web-admin |
 | **manager** | Gerente de restaurante. Gestiona los platos de su restaurante. | web-admin, web-empleados (todas las vistas) |
-| **cocinero** | Cocinero del restaurante. Prepara los pedidos. | web-empleados (cocina) |
-| **camarero** | Camarero del restaurante. Atiende barra y salón. | web-empleados (barra, salón) |
+| **cocinero** | Cocinero del restaurante. Prepara los pedidos. No accede a las mesas. | web-empleados (cocina) |
+| **camarero** | Camarero del restaurante. Atiende barra y salón y gestiona el estado de las mesas. | web-empleados (barra, salón, mesas) |
 | **cliente** | Cliente final. Hace pedidos. | web-clientes |
 
-El valor almacenado es `manager`; "gerente" es solo su traducción en la interfaz. La columna **Acceso** describe lo que muestra el menú de cada app, no una restricción real: en `web-empleados` el filtrado por rol es de navegación y las tres vistas son accesibles por URL para cualquier usuario con sesión. Quien decide de verdad es el middleware `authorize()` de la API.
+El valor almacenado es `manager`; "gerente" es solo su traducción en la interfaz. La columna **Acceso** describe lo que muestra el menú de cada app. En `web-empleados` cada vista lleva además un `roleGuard` que redirige a la página por defecto del rol, pero quien decide de verdad es la API (`authorize()` y, en las mesas, `assertRestaurantAccess()`).
 
 ### Estados de Pedido
 
@@ -43,6 +44,16 @@ El valor almacenado es `manager`; "gerente" es solo su traducción en la interfa
 | **preparando** | Ítem siendo preparado en cocina. | cocinero |
 | **listo** | Ítem preparado, listo para servir. | cocinero |
 | **entregado** | Ítem entregado al cliente. Desaparece de las vistas activas. | camarero |
+
+### Estados de Mesa
+
+| Estado | Descripción | Quién lo cambia |
+| --- | --- | --- |
+| **libre** | La mesa está disponible y aparece a los clientes si su capacidad es suficiente. | — (estado inicial); admin, manager o camarero al liberarla |
+| **ocupada** | La mesa tiene clientes. Solo en este estado se pueden crear pedidos para ella y no se puede borrar. | el cliente al elegirla y pulsar *Continuar*; también admin, manager o camarero manualmente |
+| **reservada** | Apartada a mano; no se ofrece a los clientes ni admite pedidos. No hay reservas con fecha y hora. | admin, manager o camarero |
+
+La mesa **no se libera sola** al entregar o pagar el pedido: la libera siempre un empleado desde la página *Mesas* de web-empleados (o el admin).
 
 ### Categorías de Platos
 
@@ -89,17 +100,17 @@ Las tres capas aplican al contexto `employee`:
 | **Application** | Casos de uso. Orquesta la lógica de negocio. |
 | **Infrastructure** | Implementaciones concretas: BD, HTTP, servicios externos. |
 
-En `restaurant`, `dish`, `ingredient` y `order` la separación equivalente es por carpetas: `models/`, `repositories/`, `services/`, `controllers/` y `routes/`.
+En `restaurant`, `dish`, `ingredient`, `order` y `table` la separación equivalente es por carpetas: `models/`, `repositories/`, `services/`, `controllers/` y `routes/`.
 
 ### Patrones
 
 | Patrón | Descripción | Ejemplo en Resttek |
 | --- | --- | --- |
-| **Entity** | Objeto con identidad única y comportamiento propio. | `Employee` (la única). `Restaurant`, `Dish`, `Ingredient` y `Order` son `interface` planas |
+| **Entity** | Objeto con identidad única y comportamiento propio. | `Employee` (la única). `Restaurant`, `Dish`, `Ingredient`, `Order` y `RestaurantTable` son `interface` planas |
 | **Value Object** | Objeto inmutable definido por su valor. | `Email`, `Role` |
 | **Repository** | Abstracción de persistencia. | `IEmployeeRepository`, `RestaurantRepository` |
 | **Use Case** | Acción de negocio específica, una clase con `execute()`. | `LoginUseCase`, `CreateEmployeeUseCase`, `RegisterClientUseCase` |
-| **Service** | Equivalente al caso de uso fuera de `employee`: una clase con varios métodos. | `RestaurantService`, `DishService`, `OrderService` |
+| **Service** | Equivalente al caso de uso fuera de `employee`: una clase con varios métodos. | `RestaurantService`, `DishService`, `OrderService`, `TableService` |
 | **DTO** | Objeto para transferir datos entre capas. | `CreateRestaurantDTO`, `LoginDTO` |
 | **Factory Method** | Método estático para crear instancias con validación. | `Employee.create()` |
 | **Store** | Servicio Angular que guarda estado con signals. | `AuthStore`, `DishStore`, `CartStore` |

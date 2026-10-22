@@ -52,15 +52,16 @@ src/app/
 ├── app.routes.ts
 ├── core/
 │   ├── layout/            → shell.component.ts
-│   ├── models/            → dish, order, restaurant
-│   ├── services/          → dish, order, restaurant
+│   ├── models/            → dish, order, restaurant, table
+│   ├── services/          → dish, order, restaurant, table
 │   └── store/             → cart.store.ts
 └── features/
     ├── cart/cart.component.ts
     ├── menu/restaurant-menu.component.ts
     ├── orders/my-orders.component.ts
     ├── orders/order-detail.component.ts
-    └── restaurants/restaurant-list.component.ts
+    ├── restaurants/restaurant-list.component.ts
+    └── tables/table-selection.component.ts
 ```
 
 Ninguna de las tres aplicaciones tiene carpeta `shared/` propia: lo compartido vive en `@resttek/web-shared`.
@@ -106,11 +107,11 @@ export class DishStore {
 
 Caso particular en `web-empleados`:
 
-- `OrderStore` añade **polling cada 30 s** con `startPolling()` / `stopPolling()`, ya que la API no tiene websockets.
+- `OrderStore` añade **polling cada 30 s** con `startPolling()` / `stopPolling()`, ya que la API no tiene websockets. `TableStore` (feature `tables`) sigue el mismo patrón.
 
 ### `web-clientes`: el patrón Store casi no se usa
 
-En `web-clientes` el patrón Store **no es la norma**: el único store real es `CartStore`, y es puramente local (sin HTTP) — vacía el carrito si añades un plato de otro restaurante, pero no envuelve ninguna llamada a la API.
+En `web-clientes` el patrón Store **no es la norma**: el único store real es `CartStore`, y es puramente local (sin HTTP) — vacía el carrito si añades un plato de otro restaurante, pero no envuelve ninguna llamada a la API. También guarda la **mesa elegida** (`table()`, con `restaurantId`, `id` y `number`; ver [Gestión de mesas](#gestión-de-mesas)).
 
 Para todo lo demás (restaurantes, carta/platos, confirmación y consulta de pedidos) los componentes de `features/` inyectan el `*Service` correspondiente directamente y llaman a sus métodos con `.subscribe({ next, error })`, sin pasar por ningún store ni por `firstValueFrom`:
 
@@ -119,6 +120,7 @@ Para todo lo demás (restaurantes, carta/platos, confirmación y consulta de ped
 - `cart.component.ts` (`confirmOrder()`) → `OrderService.createOrder()`
 - `my-orders.component.ts` → `OrderService.getMyOrders()`, con **polling cada 10 s** mediante `setInterval`/`clearInterval` en el propio componente
 - `order-detail.component.ts` → `OrderService.getOrderById()`, con **polling cada 5 s**, también con `setInterval`/`clearInterval` en el propio componente
+- `table-selection.component.ts` → `TableService.getAvailable()` y `TableService.occupy()`
 
 ---
 
@@ -314,7 +316,7 @@ El lazy loading **no es universal**: `web-clientes` carga `LoginComponent` y `Re
 
 ### Filtrado por Rol (web-empleados)
 
-El filtrado por rol se resuelve **de navegación** mediante `computed()` en el `ShellComponent`, que decide qué enlaces se pintan en el menú:
+El filtrado por rol tiene dos piezas. Cada ruta lleva `roleGuard([...])` (`core/guards/role.guard.ts`), que redirige a la página por defecto del rol (`cocinero` y `manager` → `/cocina`, `camarero` → `/barra`) si intenta entrar en una que no le corresponde. Y el `ShellComponent` decide con `computed()` qué enlaces se pintan en el menú:
 
 ```tsx
 export class ShellComponent {
@@ -329,12 +331,53 @@ export class ShellComponent {
     readonly canSeeSalon = computed(() =>
         this.userRole() === 'camarero' || this.userRole() === 'manager'
     )
+    readonly canSeeMesas = computed(() =>
+        this.userRole() === 'camarero' || this.userRole() === 'manager'
+    )
 
     readonly defaultRoute = computed(() => { /* cocinero → /cocina, camarero → /barra */ })
 }
 ```
 
 El rol de gerente es `'manager'`, no `'gerente'`. La autorización real es responsabilidad de la API.
+
+---
+
+## Gestión de mesas
+
+Funcionalidad de la issue #5. Las tres apps consumen el contrato [`docs/api/openapi-mesas.yaml`](../api/openapi-mesas.yaml) y deciden por **código HTTP** (o por el nombre del error en `error`), nunca por el texto de `message`. En todas, los pedidos muestran la mesa como `tableNumber ?? tableId`, para que los pedidos antiguos con texto libre sigan viéndose.
+
+### `web-admin`: feature `tables`
+
+`features/tables/{models,services,store,pages,utils}`, con el mismo patrón que `ingredients`:
+
+- Rutas `TABLE_ROUTES` montadas en `restaurants/:restaurantId/tables`: listado (`''`), alta (`new`) y edición (`:id/edit`).
+- `table-list`: número, descripción, capacidad y badge de estado, con editar y borrar (con confirmación).
+- `table-form`: alta y edición (número, descripción, capacidad, estado) con validación de número y capacidad ≥ 1.
+- `TableStore` (`loadByRestaurant`, `create`, `update`, `delete`) mantiene la lista ordenada por número en memoria.
+- `utils/table-error.ts` traduce el nombre del error de la API (`DuplicatedTableNumberError`, `TableOccupiedError`, …) a un mensaje en español; si no lo reconoce, usa el código HTTP.
+- Acceso: enlace *Mesas* en el submenú de cada restaurante del menú lateral y tarjeta *Mesas* en el dashboard del restaurante.
+
+### `web-empleados`: página *Mesas*
+
+`features/tables/{models,services,store,pages/mesas}`:
+
+- Ruta `mesas` con `roleGuard(['camarero', 'manager'])` y enlace en el shell (`canSeeMesas`). El `cocinero` no ve el enlace y, si entra por URL, se le redirige a `/cocina`.
+- Cuadrícula de mesas coloreada por estado con un `<select>` para cambiarlo (`PATCH .../status`); poner `libre` es la forma de liberar una mesa.
+- En las mesas `ocupada` se listan sus pedidos activos con el estado de cada ítem. No hay endpoint específico: `MesasComponent` combina `TableStore` y el `OrderStore` existente (`GET /orders/active`) con un `computed` que agrupa los pedidos por `tableId`.
+- Ambos stores hacen polling de 30 s mientras la página está abierta (`startPolling` en `ngOnInit`, `stopPolling` en `ngOnDestroy`).
+- Cocina, barra y salón muestran `Mesa {{ order.tableNumber ?? order.tableId }}`.
+
+### `web-clientes`: selección de mesa
+
+Flujo: listado de restaurantes → **`restaurants/:id/mesa`** → carta → carrito → pedido.
+
+- El listado de restaurantes enlaza a `/restaurants/:id/mesa` en lugar de ir directamente a la carta.
+- `TableSelectionComponent` (`features/tables/table-selection.component.ts`, componente suelto con `.subscribe()`): el cliente indica el número de personas, ve las mesas libres con capacidad suficiente (`GET .../tables/available`), elige una y al pulsar *Continuar* se llama a `occupy`. Si responde 409 (otro cliente la ha ocupado), se avisa y se recarga la lista.
+- Tras ocupar la mesa se guarda en `CartStore.setTable({ restaurantId, id, number })` y se navega a la carta. La carta redirige a la selección si no hay mesa elegida para ese restaurante.
+- El carrito muestra la mesa, la envía como `tableId` en `createOrder` y no deja confirmar sin mesa. Si el pedido devuelve 404 o 409 (la mesa ya no existe o un empleado la ha liberado), limpia la mesa (`clearTable()`) y lleva de nuevo a la selección.
+- **La mesa se conserva en `CartStore` tras pedir**: `clear()` vacía los platos pero no la mesa, de modo que el cliente puede hacer más pedidos en la misma mesa mientras siga ocupada. Se descarta al elegir otra mesa o al añadir un plato de otro restaurante.
+- El detalle del pedido muestra la mesa.
 
 ---
 

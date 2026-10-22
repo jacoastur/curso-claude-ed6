@@ -12,6 +12,8 @@ erDiagram
     restaurants ||--o{ ingredients : "tiene"
     restaurants ||--o{ dishes : "tiene"
     restaurants ||--o{ orders : "tiene"
+    restaurants ||--o{ restaurant_tables : "tiene"
+    restaurant_tables |o--o{ orders : "table_id (sin FK)"
     dishes ||--o{ dish_ingredients : "contiene"
     ingredients ||--o{ dish_ingredients : "usado en"
     orders ||--o{ order_items : "contiene"
@@ -74,6 +76,17 @@ erDiagram
         TEXT table_id
         TEXT client_id
         TEXT created_at
+    }
+
+    restaurant_tables {
+        TEXT id PK
+        TEXT restaurant_id FK
+        INTEGER number
+        TEXT description
+        INTEGER capacity
+        TEXT status
+        TEXT created_at
+        TEXT updated_at
     }
 
     order_items {
@@ -190,9 +203,34 @@ Pedidos de los clientes.
 | --- | --- | --- | --- |
 | `id` | TEXT | No | UUID, clave primaria |
 | `restaurant_id` | TEXT | No | FK → `restaurants.id` |
-| `table_id` | TEXT | Sí | Identificador de mesa (opcional) |
+| `table_id` | TEXT | Sí | Id de la mesa (`restaurant_tables.id`). Obligatorio al crear pedidos nuevos; puede ser `null` o texto libre en pedidos antiguos |
 | `client_id` | TEXT | Sí | ID del cliente (opcional) |
 | `created_at` | TEXT | No | Fecha de creación |
+
+La API exige `table_id` en los pedidos nuevos y valida que la mesa sea del mismo restaurante y esté `ocupada`, pero la columna **no tiene FK** para no romper pedidos anteriores que guardaban un texto libre (el seed antiguo usaba `'5'`). Al leer pedidos se hace `LEFT JOIN restaurant_tables t ON o.table_id = t.id AND t.restaurant_id = o.restaurant_id` para devolver `tableNumber`.
+
+---
+
+### `restaurant_tables`
+
+Mesas de cada restaurante. Se llama `restaurant_tables` y no `tables` para no confundirla con la palabra *table* de SQL.
+
+| Columna | Tipo | Nullable | Descripción |
+| --- | --- | --- | --- |
+| `id` | TEXT | No | UUID, clave primaria |
+| `restaurant_id` | TEXT | No | FK → `restaurants.id` |
+| `number` | INTEGER | No | Número visible de la mesa (entero ≥ 1) |
+| `description` | TEXT | Sí | Texto libre (ej: "Terraza") |
+| `capacity` | INTEGER | No | Número máximo de comensales (entero ≥ 1) |
+| `status` | TEXT | No | Estado: libre, ocupada, reservada (default: `libre`) |
+| `created_at` | TEXT | No | Fecha de creación |
+| `updated_at` | TEXT | No | Fecha de última actualización |
+
+**Restricciones:**
+
+- UNIQUE (`restaurant_id`, `number`): el número no se repite dentro de un restaurante, pero sí entre restaurantes.
+- `restaurant_id` es FK a `restaurants.id`.
+- No se puede borrar una mesa `ocupada` (regla del servicio, no de la BD).
 
 ---
 
@@ -223,6 +261,8 @@ Líneas de pedido. Cada ítem es un plato con cantidad y estado.
 | Restaurant → Ingredients | 1:N | Un restaurante tiene muchos ingredientes |
 | Restaurant → Dishes | 1:N | Un restaurante tiene muchos platos |
 | Restaurant → Orders | 1:N | Un restaurante tiene muchos pedidos |
+| Restaurant → Tables | 1:N | Un restaurante tiene muchas mesas (`restaurant_tables`) |
+| Table → Orders | 1:N | Una mesa ocupada puede tener varios pedidos (`orders.table_id`, sin FK) |
 | Dish ↔ Ingredient | N:M | Un plato usa varios ingredientes (via `dish_ingredients`) |
 | Order → OrderItems | 1:N | Un pedido tiene varios ítems |
 | Dish → OrderItems | 1:N | Un plato puede estar en varios ítems de pedido |
@@ -231,7 +271,7 @@ Líneas de pedido. Cada ítem es un plato con cantidad y estado.
 
 ## Notas Técnicas
 
-- **IDs**: Todos son UUID v4 generados con `crypto.randomUUID()`. Excepción: el script de seed usa los identificadores fijos `rest-1` y `rest-2` para los restaurantes de prueba.
+- **IDs**: Todos son UUID v4 generados con `crypto.randomUUID()`. Excepción: el script de seed usa los identificadores fijos `rest-1` y `rest-2` para los restaurantes de prueba y `rest-N-mesa-M` para sus mesas.
 - **Fechas**: Almacenadas como TEXT en formato ISO 8601 (`new Date().toISOString()`).
 - **Booleanos**: SQLite no tiene tipo BOOLEAN; se usa INTEGER (0 = false, 1 = true).
 - **Nomenclatura**: las columnas son `snake_case` y las propiedades TypeScript `camelCase`. La conversión se hace con alias en el propio SQL (`owner_first_name as ownerFirstName`).
