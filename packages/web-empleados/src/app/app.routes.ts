@@ -33,6 +33,11 @@ export const routes: Routes = [
         path: 'salon',
         loadComponent: () => import('./features/orders/pages/salon/salon.component').then(m => m.SalonComponent),
         canActivate: [roleGuard(['camarero', 'manager'])],
+      },
+      {
+        path: 'mesas',
+        loadComponent: () => import('./features/tables/pages/mesas/mesas.component').then(m => m.MesasComponent),
+        canActivate: [roleGuard(['camarero', 'manager'])],
       }
     ]
   },
